@@ -819,7 +819,7 @@ class TallyCraftApp(tk.Tk):
         messagebox.showinfo(f"About {APP_NAME}",
                             f"{APP_NAME} {__version__}\n\nCalculates shipping weights for laser-cut plywood kits "
                             "from DXF files, using the weight-per-area of a control sample.\n\n"
-                            f"Data folder:\n{self.storage.root}\n\nMIT License · github.com/jaerxion/TallyCraft",
+                            f"Data folder:\n{self.storage.root}\n\nMIT License · github.com/jaerixon/TallyCraft",
                             parent=self)
 
     def report_callback_exception(self, exc, val, tb):  # noqa: D401 (Tk hook)

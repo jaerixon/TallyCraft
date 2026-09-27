@@ -18,4 +18,4 @@ laser-cut plywood kits from DXF files using a weight-per-area control sample.
 - No thickness anywhere (deliberately removed from the design).
 - Dependencies stay minimal: `ezdxf`, `Pillow` (icon generation only), `pyinstaller` (build only), `pytest` (dev).
 - Run tests: `python -m pytest -q`. Run app from source: `python -m tallycraft` with `src` on the path (see README).
-- Git: branch `main`; remote `github.com/jaerxion/TallyCraft` (public). Commit only when asked; releases are cut by pushing a `vX.Y.Z` tag.
+- Git: branch `main`; remote `github.com/jaerixon/TallyCraft` (public). Commit only when asked; releases are cut by pushing a `vX.Y.Z` tag.

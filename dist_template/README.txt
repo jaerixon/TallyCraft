@@ -118,5 +118,5 @@ TIPS
   * If something unexpected goes wrong, TallyCraft saves the details in
     tallycraft_error.log in this folder.
 
-Project page, updates, and source code: https://github.com/jaerxion/TallyCraft
+Project page, updates, and source code: https://github.com/jaerixon/TallyCraft
 License: MIT

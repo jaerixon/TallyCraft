@@ -13,7 +13,7 @@ any open questions.
 - Layers: geometry on layers that are off or frozen is skipped, as is geometry on any layer
   named in `settings.json` → `ignored_layer_names` (default CONSTRUCTION, DEFPOINTS). Skipped
   geometry gets an Info note.
-- GitHub: `gh` installed via winget. The repo will be the public `jaerxion/TallyCraft`.
+- GitHub: `gh` installed via winget. The repo will be the public `jaerixon/TallyCraft`.
 
 **Done**
 - Repo skeleton: `.gitignore`, MIT `LICENSE`, root `README.md`, `docs/` (SPEC, PROGRESS,

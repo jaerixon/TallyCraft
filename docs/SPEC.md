@@ -236,7 +236,7 @@ tests/               pytest
 .github/workflows/release.yml
 ```
 
-- Public repo: `github.com/jaerxion/TallyCraft`.
+- Public repo: `github.com/jaerixon/TallyCraft`.
 - Release: pushing tag `vX.Y.Z` triggers GitHub Actions (windows-latest) to
   run tests, build, zip `TallyCraft/` as `TallyCraft-vX.Y.Z-windows.zip`,
   and attach it to a GitHub Release.

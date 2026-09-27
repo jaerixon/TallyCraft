@@ -27,7 +27,7 @@ then takes two clicks.
 
 ## Download
 
-1. Go to the [**Releases**](https://github.com/jaerxion/TallyCraft/releases/latest) page.
+1. Go to the [**Releases**](https://github.com/jaerixon/TallyCraft/releases/latest) page.
 2. Download `TallyCraft-vX.Y.Z-windows.zip` under **Assets**.
 3. Unzip it somewhere you can save files, such as Documents or the Desktop (not Program Files).
 4. Double-click `TallyCraft.exe`. You don't need to install Python or anything else.
@@ -79,7 +79,7 @@ run while any row has an Error. It asks you to confirm before running if any row
 ## Run from source
 
 ```powershell
-git clone https://github.com/jaerxion/TallyCraft.git
+git clone https://github.com/jaerixon/TallyCraft.git
 cd TallyCraft
 py -3.12 -m venv .venv
 .venv\Scripts\pip install -r requirements-dev.txt
