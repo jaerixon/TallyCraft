@@ -90,19 +90,58 @@ class ResultLine:
 
 
 @dataclass(frozen=True)
+class SkippedLine:
+    """A piece left out of the total because it has an Error."""
+    name: str
+    count: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class CalcResult:
     lines: list[ResultLine]
     total_g: float
     grams_per_cm2: float
+    skipped: list[SkippedLine] = ()
+
+    @property
+    def incomplete(self) -> bool:
+        return bool(self.skipped)
+
+    @property
+    def incomplete_note(self) -> str:
+        """Shown beside the total so a partial weight is never mistaken for a complete one."""
+        n = len(self.skipped)
+        return f"Incomplete: {n} file{'s' if n != 1 else ''} skipped" if n else ""
 
 
-def calculate(pieces: list[PieceInput], control: ControlSample) -> CalcResult:
+def calculate(pieces: list[PieceInput], control: ControlSample,
+              skipped: list[SkippedLine] = ()) -> CalcResult:
     gpc = control.grams_per_cm2
     lines = []
     for p in pieces:
         per = gpc * p.area_cm2
         lines.append(ResultLine(p.name, per, p.count, per * p.count))
-    return CalcResult(lines, sum(l.item_total_g for l in lines), gpc)
+    return CalcResult(lines, sum(l.item_total_g for l in lines), gpc, list(skipped))
+
+
+SKIPPED_LABEL = "Skipped - not included"
+
+
+def results_as_text(result: CalcResult, calibration_note: str = "") -> str:
+    """Tab-separated table for pasting into a spreadsheet or email."""
+    out = ["File Name\tWeight per piece (g)\tCount\tItem Total (g)"]
+    out += [f"{l.name}\t{l.weight_per_piece_g:.2f}\t{l.count}\t{l.item_total_g:.2f}" for l in result.lines]
+    out += [f"{s.name}\t{SKIPPED_LABEL}\t{s.count}\t{SKIPPED_LABEL}" for s in result.skipped]
+    total = f"Package Total\t\t\t{result.total_g:.1f} g ({format_lb_oz(result.total_g)})"
+    if result.incomplete:
+        total += f"\t{result.incomplete_note.upper()} - NOT A COMPLETE SHIPPING WEIGHT"
+    out.append(total)
+    for s in result.skipped:
+        out.append(f"Skipped: {s.name} - {s.reason}")
+    if calibration_note:
+        out.append(calibration_note)
+    return "\n".join(out)
 
 
 def grams_to_lb_oz(grams: float, oz_decimals: int = 1) -> tuple[int, float]:

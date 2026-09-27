@@ -13,8 +13,9 @@ No need to weigh every kit.
 
 You sell products that ship as kits of flat plywood pieces, such as enclosures, furniture, or puzzles.
 TallyCraft takes the DXF design file for each piece and measures its net surface area:
-the outline minus every hole and cutout. It then weighs the kit using a single small **control
-sample** cut from the same plywood stock.
+the outline minus every hole and cutout. It then weighs the kit from one weighing of the same
+plywood: either a few **pieces you've already cut** (weigh 10 of a part, enter the total), or a
+separate small **control sample**.
 
 It gives you:
 
@@ -22,7 +23,7 @@ It gives you:
 - the item total for each piece (weight × count per kit), and
 - the **package total** in grams and in **lb + oz**.
 
-Save a kit as a *Package Preset* and a plywood batch as a *Control Preset*. The next shipment
+Save a kit as a *Package Preset* and a plywood batch as a *Calibration Preset*. The next shipment
 then takes two clicks.
 
 ## Download
@@ -56,8 +57,10 @@ automatically. You never have to measure it.
 **Geometry.** Real CAD exports are usually loose `LINE`s and `ARC`s rather than clean closed
 shapes. TallyCraft:
 
-1. Reads `LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE`/`POLYLINE`, and block references.
-2. Converts arcs and circles into straight segments of 2° or less.
+1. Reads `LINE`, `ARC`, `CIRCLE`, `SPLINE`, `ELLIPSE`, `LWPOLYLINE`/`POLYLINE`, and block
+   references.
+2. Converts arcs and circles into straight segments of 2° or less. Splines and ellipses are
+   flattened even more finely (area error under 0.01%).
 3. Joins segments into closed loops wherever their endpoints meet (within 0.0001 units).
 4. Measures each loop with the shoelace formula. The largest loop is the outline, and every
    other loop is a hole that gets **subtracted**.
@@ -65,16 +68,22 @@ shapes. TallyCraft:
 **Math.** Everything is converted to cm², so inch and mm files can be mixed freely:
 
 ```
-g_per_cm² = control_weight_g / control_area_cm²
+g_per_cm² = weight_g / (quantity × piece_area_cm²)   # reference piece (default)
+         or control_weight_g / control_area_cm²      # control sample
 piece_g   = g_per_cm² × piece_area_cm²
 item_g    = piece_g × count
 total_g   = Σ item_g        →  also shown as lb + oz
 ```
 
+**See what was measured.** Click any piece to see a preview drawn from the exact loops used for
+its area. The solid outline and the holes are colored differently, and gaps are marked in red.
+
 **Problems are reported, not guessed around.** Each row gets a status: OK, Info, Warning, or
-Error. Gaps in an outline, unsupported curves (splines, ellipses), unknown units, damaged files,
-and files with several separate shapes are all flagged by name and location. Calculate won't
-run while any row has an Error. It asks you to confirm before running if any row has a Warning.
+Error. Gaps in an outline, unsupported geometry (such as 3D solids), unknown units, damaged
+files, and files with several separate shapes are all flagged by name and location. Pieces with
+an Error are skipped, and the total is clearly marked **"Incomplete: N files skipped"** so a
+partial weight is never mistaken for a complete one. Calculate asks you to confirm before
+running if any piece has a Warning.
 
 ## Run from source
 

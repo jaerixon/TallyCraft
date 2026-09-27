@@ -20,3 +20,11 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# A release unzipped/run from the repo root (exe + its data files)
+/TallyCraft.exe
+/README.txt
+/settings.json
+/settings.json.bak
+/package_presets/
+/control_presets/

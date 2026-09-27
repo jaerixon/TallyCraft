@@ -7,6 +7,8 @@ from tallycraft.messages import Level
 
 # Tessellation at 2 degrees under-reports circle area by ~0.02%.
 CIRCLE_RTOL = 5e-4
+# Flattened splines/ellipses must match analytic areas to 0.01%.
+SPLINE_RTOL = 1e-4
 
 
 def texts(piece, level=None):
@@ -196,8 +198,8 @@ def test_duplicate_lines_are_dropped_with_info(dxf):
 
 
 @pytest.mark.parametrize("adder, name", [
-    (lambda m: m.add_spline([(0, 0), (1, 1), (2, 0), (3, 1)]), "SPLINE"),
-    (lambda m: m.add_ellipse((5, 5), major_axis=(2, 0), ratio=0.5), "ELLIPSE"),
+    (lambda m: m.add_3dface([(0, 0), (1, 0), (1, 1), (0, 1)]), "3DFACE"),
+    (lambda m: m.add_solid([(0, 0), (1, 0), (1, 1)]), "SOLID"),
 ])
 def test_unsupported_geometry_is_named(dxf, adder, name):
     doc, msp = dxf.new()
@@ -207,6 +209,133 @@ def test_unsupported_geometry_is_named(dxf, adder, name):
     assert p.status == Level.ERROR
     assert p.net_area_raw is None
     assert any(name in t for t in texts(p, Level.ERROR))
+
+
+# ---------------------------------------------------------------- splines & ellipses
+
+# A NURBS circle: degree 2, 9 control points, exact (not approximate) circle.
+_W = math.sqrt(2) / 2
+_CIRCLE_WEIGHTS = [1, _W, 1, _W, 1, _W, 1, _W, 1]
+_CIRCLE_KNOTS = [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4]
+
+
+def _nurbs_circle(msp, cx, cy, r):
+    unit = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0)]
+    pts = [(cx + r * x, cy + r * y) for x, y in unit]
+    return msp.add_rational_spline(pts, _CIRCLE_WEIGHTS, degree=2, knots=_CIRCLE_KNOTS)
+
+
+def test_open_spline_joins_lines(dxf):
+    # 4x2 rectangle whose top edge is a quadratic spline (a parabola) bulging up.
+    # The parabola's apex is 1 above the chord (half the control point's offset of 2),
+    # so it adds exactly 2/3 * chord * height = 2/3 * 4 * 1.
+    doc, msp = dxf.new()
+    msp.add_line((0, 0), (4, 0))
+    msp.add_line((4, 0), (4, 2))
+    msp.add_open_spline([(4, 2), (2, 4), (0, 2)], degree=2)
+    msp.add_line((0, 2), (0, 0))
+    p = parse_dxf(dxf.save(doc))
+    assert p.status == Level.OK, p.messages
+    assert p.net_area_raw == pytest.approx(8 + 8 / 3, rel=SPLINE_RTOL)
+
+
+def test_two_splines_joining_each_other(dxf):
+    # Same shape, but the top edge is split into two cubic splines that meet
+    # each other (not a line) in the middle, as in the user's real panels.
+    doc, msp = dxf.new()
+    msp.add_line((0, 0), (4, 0))
+    msp.add_line((4, 0), (4, 2))
+    msp.add_open_spline([(4, 2), (3.5, 3), (2.5, 3), (2, 3)], degree=3)
+    msp.add_open_spline([(2, 3), (1.5, 3), (0.5, 3), (0, 2)], degree=3)
+    msp.add_line((0, 2), (0, 0))
+    p = parse_dxf(dxf.save(doc))
+    assert p.status == Level.OK, p.messages
+    # Independent value: integrate the exact cubic Beziers with Green's theorem.
+    def bez_area_term(p0, p1, p2, p3, n=20000):
+        s = 0.0
+        prev = p0
+        for i in range(1, n + 1):
+            t = i / n
+            mt = 1 - t
+            x = mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0] + t**3 * p3[0]
+            y = mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1] + t**3 * p3[1]
+            s += prev[0] * y - x * prev[1]
+            prev = (x, y)
+        return s
+    edges = [((0, 0), (4, 0)), ((4, 0), (4, 2)), ((0, 2), (0, 0))]
+    total = sum(a[0] * b[1] - b[0] * a[1] for a, b in edges)
+    total += bez_area_term((4, 2), (3.5, 3), (2.5, 3), (2, 3))
+    total += bez_area_term((2, 3), (1.5, 3), (0.5, 3), (0, 2))
+    assert p.net_area_raw == pytest.approx(abs(total) / 2, rel=SPLINE_RTOL)
+
+
+def test_closed_spline_as_hole(dxf):
+    doc, msp = dxf.new()
+    dxf.rect_lines(msp, 0, 0, 10, 10)
+    _nurbs_circle(msp, 5, 5, 2)
+    p = parse_dxf(dxf.save(doc))
+    assert p.status <= Level.INFO, p.messages
+    assert p.net_area_raw == pytest.approx(100 - math.pi * 4, rel=SPLINE_RTOL)
+
+
+def test_closed_spline_as_outline(dxf):
+    doc, msp = dxf.new()
+    _nurbs_circle(msp, 0, 0, 3)
+    p = parse_dxf(dxf.save(doc))
+    assert p.status == Level.OK, p.messages
+    assert p.net_area_raw == pytest.approx(math.pi * 9, rel=SPLINE_RTOL)
+
+
+def test_full_ellipse_as_hole(dxf):
+    doc, msp = dxf.new()
+    dxf.rect_lines(msp, 0, 0, 10, 10)
+    msp.add_ellipse((5, 5), major_axis=(3, 0), ratio=0.5)  # a=3, b=1.5
+    p = parse_dxf(dxf.save(doc))
+    assert p.status <= Level.INFO, p.messages
+    assert p.net_area_raw == pytest.approx(100 - math.pi * 3 * 1.5, rel=SPLINE_RTOL)
+
+
+def test_half_ellipse_joined_to_line(dxf):
+    doc, msp = dxf.new()
+    msp.add_ellipse((0, 0), major_axis=(4, 0), ratio=0.5, start_param=0, end_param=math.pi)
+    msp.add_line((-4, 0), (4, 0))
+    p = parse_dxf(dxf.save(doc))
+    assert p.status == Level.OK, p.messages
+    assert p.net_area_raw == pytest.approx(math.pi * 4 * 2 / 2, rel=SPLINE_RTOL)
+
+
+def test_spline_gap_still_reported(dxf):
+    doc, msp = dxf.new()
+    msp.add_line((0, 0), (4, 0))
+    msp.add_line((4, 0), (4, 2))
+    msp.add_open_spline([(4, 2), (2, 4), (0.01, 2)], degree=2)  # stops 0.01 short
+    msp.add_line((0, 2), (0, 0))
+    p = parse_dxf(dxf.save(doc))
+    assert p.status == Level.ERROR
+    assert any("gap" in t for t in texts(p, Level.ERROR))
+
+
+# ---------------------------------------------------------------- preview data
+
+def test_preview_data_for_good_piece(dxf):
+    doc, msp = dxf.new()
+    dxf.rect_lines(msp, 0, 0, 10, 10)
+    msp.add_circle((5, 5), 1)
+    p = parse_dxf(dxf.save(doc))
+    assert len(p.loops) == 2
+    assert sorted(p.loop_depths) == [0, 1]
+    assert p.open_chains == [] and p.error_points == []
+
+
+def test_preview_data_for_gap(dxf):
+    doc, msp = dxf.new()
+    msp.add_line((0, 0), (4, 0))
+    msp.add_line((4, 0), (4, 2))
+    msp.add_line((4, 2), (0, 2))
+    msp.add_line((0, 2), (0, 0.5))
+    p = parse_dxf(dxf.save(doc))
+    assert len(p.open_chains) == 1 and len(p.open_chains[0]) == 5  # traced end to end
+    assert sorted(p.error_points) == [(0, 0), (0, 0.5)]
 
 
 def test_text_and_dimensions_are_ignored_with_info(dxf):
@@ -323,5 +452,7 @@ def test_polygon_area_orientation_independent():
 
 
 def test_stitch_returns_error_for_single_dangling_end():
-    loops, errors = stitch([[(0, 0), (1, 0)], [(1, 0), (1, 1)]])
-    assert loops == [] and errors
+    r = stitch([[(0, 0), (1, 0)], [(1, 0), (1, 1)]])
+    assert r.loops == [] and r.errors
+    assert r.open_chains == [[(0, 0), (1, 0), (1, 1)]] or r.open_chains == [[(1, 1), (1, 0), (0, 0)]]
+    assert sorted(r.error_points) == [(0, 0), (1, 1)]

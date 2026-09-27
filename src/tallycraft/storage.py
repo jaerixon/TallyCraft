@@ -18,7 +18,12 @@ DEFAULT_SETTINGS = {
     "default_control_preset": None,
     "ignored_layer_names": ["CONSTRUCTION", "DEFPOINTS"],
     "last_import_dir": None,
+    "text_scale": 1.0,  # View > Larger/Smaller Text
+    "calibration_mode": "reference",  # last-used section 2 method: "reference" | "control"
+    "main_split": None,  # top/bottom divider position as a fraction of the window height
 }
+MAIN_SPLIT_MIN, MAIN_SPLIT_MAX = 0.15, 0.85
+TEXT_SCALE_MIN, TEXT_SCALE_MAX = 0.8, 2.5
 
 _RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
@@ -84,6 +89,18 @@ class Storage:
         settings.update(data)
         if not isinstance(settings.get("ignored_layer_names"), list):
             settings["ignored_layer_names"] = list(DEFAULT_SETTINGS["ignored_layer_names"])
+        scale = settings.get("text_scale")
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or scale != scale:
+            settings["text_scale"] = 1.0  # hand-edited to something unusable
+        else:
+            settings["text_scale"] = min(TEXT_SCALE_MAX, max(TEXT_SCALE_MIN, float(scale)))
+        if settings.get("calibration_mode") not in ("reference", "control"):
+            settings["calibration_mode"] = "reference"
+        split = settings.get("main_split")
+        if isinstance(split, bool) or not isinstance(split, (int, float)) or split != split:
+            settings["main_split"] = None
+        else:
+            settings["main_split"] = min(MAIN_SPLIT_MAX, max(MAIN_SPLIT_MIN, float(split)))
         return settings, None
 
     def save_settings(self, settings: dict) -> None:
@@ -177,22 +194,56 @@ class Storage:
         return self._path_for(self.control_dir, name)
 
     def save_control(self, name: str, length: str, width: str, unit: str, weight_g: str) -> Path:
-        """Values are stored exactly as typed so no precision is lost."""
+        """Control-sample calibration. Values are stored exactly as typed so no precision is lost."""
         path = self.control_path(name)
         _write_json(path, {
-            "type": CONTROL_KIND, "version": 1, "name": name.strip(),
+            "type": CONTROL_KIND, "version": 1, "name": name.strip(), "method": "control",
             "length": length.strip(), "width": width.strip(), "unit": unit,
             "weight_g": weight_g.strip(),
         })
         return path
 
+    def save_reference(self, name: str, ref_path: str, ref_name: str, quantity: str, weight_g: str,
+                       grams_per_cm2: float, area_cm2: float) -> Path:
+        """Reference-piece calibration. The derived g/cm² and the piece's net area are
+        stored too, so the preset still works in a package that doesn't contain the file."""
+        path = self.control_path(name)
+        _write_json(path, {
+            "type": CONTROL_KIND, "version": 1, "name": name.strip(), "method": "reference",
+            "reference_path": ref_path, "reference_name": ref_name,
+            "quantity": quantity.strip(), "weight_g": weight_g.strip(),
+            "grams_per_cm2": grams_per_cm2, "reference_area_cm2": area_cm2,
+        })
+        return path
+
     def load_control(self, name: str) -> dict:
+        """Returns a dict with "method": "control" (length/width/unit/weight_g) or
+        "reference" (reference_path/name, quantity, weight_g, grams_per_cm2, area_cm2).
+        Presets saved before methods existed have no "method" key and load as control."""
         path = self._find(self.control_dir, CONTROL_KIND, name)
         data = self._read(path, CONTROL_KIND)
+        shown = str(data.get("name") or path.stem)
+        method = data.get("method", "control")
+        if method == "reference":
+            ref_path = data.get("reference_path")
+            if not isinstance(ref_path, str) or not ref_path:
+                raise PresetError(f"The preset \"{name}\" doesn't say which reference piece was weighed.")
+            gpc = data.get("grams_per_cm2")
+            if isinstance(gpc, bool) or not isinstance(gpc, (int, float)) or not gpc > 0:
+                raise PresetError(f"The preset \"{name}\" has no usable saved g/cm² ratio.")
+            area = data.get("reference_area_cm2")
+            if isinstance(area, bool) or not isinstance(area, (int, float)) or not area > 0:
+                area = None
+            return {"method": "reference", "name": shown, "reference_path": ref_path,
+                    "reference_name": str(data.get("reference_name") or Path(ref_path).name),
+                    "quantity": _as_text(data.get("quantity")), "weight_g": _as_text(data.get("weight_g")),
+                    "grams_per_cm2": float(gpc), "area_cm2": float(area) if area else None}
+        if method != "control":
+            raise PresetError(f"The preset \"{name}\" uses an unknown calibration method ({method!r}).")
         unit = data.get("unit")
         if unit not in ("in", "mm"):
             raise PresetError(f"The control preset \"{name}\" has an invalid unit ({unit!r}).")
-        return {"name": str(data.get("name") or path.stem),
+        return {"method": "control", "name": shown,
                 "length": _as_text(data.get("length")), "width": _as_text(data.get("width")),
                 "unit": unit, "weight_g": _as_text(data.get("weight_g"))}
 

@@ -51,7 +51,9 @@ class PieceRow:
     def messages(self) -> list[Message]:
         msgs = []
         header = self.parsed.header_unit
-        if self.unit not in UNIT_TO_CM:
+        if self.parsed.bbox_raw is None:
+            pass  # unreadable / no geometry: the parser's own error is the real reason
+        elif self.unit not in UNIT_TO_CM:
             note = self.parsed.header_unit_note or "The units for this file are unknown."
             msgs.append(Message(Level.ERROR, f"{note} Choose Inches or Millimeters in the Units column."))
         elif self.unit != header:

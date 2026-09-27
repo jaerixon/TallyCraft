@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from tallycraft.calc import (ControlSample, PieceInput, calculate, format_lb_oz, grams_to_lb_oz,
-                             parse_positive, validate_control)
+from tallycraft.calc import (ControlSample, PieceInput, SkippedLine, calculate, format_lb_oz,
+                             grams_to_lb_oz, parse_positive, results_as_text, validate_control)
 from tallycraft.messages import Level
 from tallycraft.pieces import PieceRow
 from tallycraft.storage import PresetError, Storage, safe_filename
@@ -41,6 +41,28 @@ def test_mixed_units_are_normalized():
     assert res.lines[0].weight_per_piece_g == pytest.approx(20.0)
     assert res.lines[0].item_total_g == pytest.approx(60.0)
     assert res.total_g == pytest.approx(60.0)
+
+
+def test_skipped_rows_are_excluded_and_flagged():
+    control = ControlSample(2, 4, "in", 20.0)  # 20 g per 8 in²
+    per_in2_cm2 = 2.54 ** 2
+    res = calculate([PieceInput("a", 8 * per_in2_cm2, 2)], control,
+                    skipped=[SkippedLine("bad.dxf", 3, "The outline has a gap"),
+                             SkippedLine("worse.dxf", 1, "File not found")])
+    assert res.total_g == pytest.approx(40.0)  # skipped rows contribute nothing
+    assert res.incomplete and res.incomplete_note == "Incomplete: 2 files skipped"
+    text = results_as_text(res)
+    assert "bad.dxf\tSkipped - not included\t3" in text
+    assert "INCOMPLETE: 2 FILES SKIPPED" in text
+    assert "Skipped: worse.dxf - File not found" in text
+
+
+def test_complete_result_has_no_note():
+    res = calculate([PieceInput("a", 1.0, 1)], ControlSample(1, 1, "in", 1.0))
+    assert not res.incomplete and res.incomplete_note == ""
+    assert "INCOMPLETE" not in results_as_text(res)
+    one = calculate([], ControlSample(1, 1, "in", 1.0), skipped=[SkippedLine("x", 1, "r")])
+    assert one.incomplete_note == "Incomplete: 1 file skipped"
 
 
 def test_lb_oz_conversion_and_carry():
@@ -126,6 +148,14 @@ def test_wrong_kind_rejected(tmp_path):
     (s.control_dir / "P.json").write_bytes((s.package_dir / "P.json").read_bytes())
     with pytest.raises(PresetError, match="isn't a TallyCraft control preset"):
         s.load_control("P")
+
+
+@pytest.mark.parametrize("stored, expected", [(1.25, 1.25), (9, 2.5), (0.1, 0.8), ("big", 1.0),
+                                              (None, 1.0), (True, 1.0)])
+def test_text_scale_is_restored_and_sanitized(tmp_path, stored, expected):
+    s = Storage(tmp_path)
+    s.settings_path.write_text(json.dumps({"text_scale": stored}), encoding="utf-8")
+    assert s.load_settings()[0]["text_scale"] == expected
 
 
 def test_settings_defaults_and_corrupt_backup(tmp_path):
