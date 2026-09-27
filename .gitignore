@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# PyInstaller / build output
+build/
+dist/
+*.spec.bak
+
+# Local run-from-source data (presets/settings created by the app)
+portable/
+tallycraft_error.log
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

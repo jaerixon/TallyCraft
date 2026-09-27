@@ -1,0 +1,56 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Check tag matches __version__
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path src/tallycraft/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$ver" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match __version__ $ver" }
+
+      - name: Build exe and folder
+        run: python build.py
+
+      - name: Self-test the packaged exe
+        shell: pwsh
+        run: |
+          python -c "import ezdxf; d=ezdxf.new(); d.header['`$INSUNITS']=1; m=d.modelspace(); [m.add_line(a,b) for a,b in [((0,0),(4,0)),((4,0),(4,2)),((4,2),(0,2)),((0,2),(0,0))]]; d.saveas('ci.dxf')"
+          $p = Start-Process dist/TallyCraft/TallyCraft.exe -ArgumentList '--selftest','selftest.json','ci.dxf' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "selftest exit $($p.ExitCode)" }
+          $r = Get-Content selftest.json | ConvertFrom-Json
+          if ($r[0].status -ne 'OK' -or [math]::Abs($r[0].area_raw - 8) -gt 1e-9) { throw "bad selftest: $(Get-Content selftest.json -Raw)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TallyCraft-windows
+          path: dist/TallyCraft-*-windows.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TallyCraft-*-windows.zip
+          generate_release_notes: true
