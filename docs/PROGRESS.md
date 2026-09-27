@@ -50,9 +50,13 @@ These changes are still part of the unreleased v0.2.0.
     mode, since Reference piece is now the default.
   - The rebuilt exe passes its self-test. The screenshot was reviewed.
 
+**Released:** v0.2.0 (sessions 2–4) was committed as `fcc6354`, tagged, and published by CI:
+https://github.com/jaerixon/TallyCraft/releases/tag/v0.2.0 (`TallyCraft-v0.2.0-windows.zip`;
+tests and the exe self-test passed).
+
 **Next**
 1. User tries reference-piece calibration with a real weighing.
-2. Commit, push, and tag `v0.2.0` once the user gives the go-ahead.
+2. Housekeeping: bump the GitHub Actions versions off Node 20 (still only a warning).
 
 ---
 
