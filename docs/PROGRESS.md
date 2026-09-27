@@ -39,11 +39,13 @@ any open questions.
   The packaged exe self-test passed and the GUI launches from the exe.
 
 **Next**
-1. User runs `gh auth login`. Then create the public repo, push, and tag `v0.1.0` to trigger
-   the first release.
+1. ~~Create the repo and push~~. Done: https://github.com/jaerixon/TallyCraft. The `v0.1.0`
+   release was built by CI; the exe self-test passed and the zip is attached.
 2. Validate against one of the user's real DXF exports. The original prompt says the algorithm
    was prototyped against a real file; compare that file's area to the prototype's number.
 3. Collect real-use feedback on the UI.
 
 **Open questions**
 - None pending.
+- Housekeeping: GitHub warns that the actions in `release.yml` target Node 20, which is
+  deprecated. They still run for now. Bump the action versions when newer majors come out.
