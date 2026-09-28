@@ -42,6 +42,16 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "selftest exit $($p.ExitCode)" }
           $r = Get-Content selftest.json | ConvertFrom-Json
           if ($r[0].status -ne 'OK' -or [math]::Abs($r[0].area_raw - 8) -gt 1e-9) { throw "bad selftest: $(Get-Content selftest.json -Raw)" }
+          # Packing list: validate the bundled Word template and fill it in (GitHub runners have no Word,
+          # so PDF conversion is only checked locally with --selftest-pdf).
+          $p = Start-Process dist/TallyCraft/TallyCraft.exe -ArgumentList '--selftest-docx','selftest.docx','ci.dxf' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "packing list selftest exit $($p.ExitCode)" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path selftest.docx))
+          $names = $zip.Entries | ForEach-Object FullName
+          $zip.Dispose()
+          if (-not ($names -contains 'word/document.xml') -or -not ($names | Where-Object { $_ -like 'word/media/*' })) { throw "packing list selftest: bad .docx" }
+          if (-not (Test-Path dist/TallyCraft/templates/packing_list_template.docx) -or -not (Test-Path dist/TallyCraft/templates/_default/packing_list_template.docx)) { throw "templates missing from the app folder" }
 
       - uses: actions/upload-artifact@v4
         with:

@@ -12,6 +12,12 @@ from pathlib import Path
 
 PACKAGE_DIR = "package_presets"
 CONTROL_DIR = "control_presets"
+ORDER_DIR = "order_presets"
+PACKING_DIR = "packing_lists"
+TEMPLATES_DIR = "templates"
+TEMPLATE_NAME = "packing_list_template.docx"
+DEFAULT_TEMPLATE_SETTING = f"{TEMPLATES_DIR}/{TEMPLATE_NAME}"
+DEFAULT_NOTE = "Thank you for your order!"
 SETTINGS_FILE = "settings.json"
 
 DEFAULT_SETTINGS = {
@@ -21,6 +27,12 @@ DEFAULT_SETTINGS = {
     "text_scale": 1.0,  # View > Larger/Smaller Text
     "calibration_mode": "reference",  # last-used section 2 method: "reference" | "control"
     "main_split": None,  # top/bottom divider position as a fraction of the window height
+    "shop_name": "",  # packing list header
+    "logo_path": None,  # optional PNG/JPG for the packing list header
+    "default_note": DEFAULT_NOTE,  # pre-filled "Note to customer"
+    "cut_colors": ["ACI 7", "RGB 0,0,0"],  # colors that mean "cut"; every other color is engrave-only
+    "template_path": DEFAULT_TEMPLATE_SETTING,  # packing list Word template (relative to the TallyCraft folder)
+    "pdf_engine": "auto",  # Make PDFs with: "auto" (LibreOffice if installed, else Word) / "word" / "libreoffice"
 }
 MAIN_SPLIT_MIN, MAIN_SPLIT_MAX = 0.15, 0.85
 TEXT_SCALE_MIN, TEXT_SCALE_MAX = 0.8, 2.5
@@ -60,11 +72,16 @@ class Storage:
         self.root = Path(root) if root else app_root()
         self.package_dir = self.root / PACKAGE_DIR
         self.control_dir = self.root / CONTROL_DIR
+        self.order_dir = self.root / ORDER_DIR
+        self.packing_dir = self.root / PACKING_DIR
+        self.templates_dir = self.root / TEMPLATES_DIR
         self.settings_path = self.root / SETTINGS_FILE
 
     def ensure_folders(self) -> None:
         self.package_dir.mkdir(parents=True, exist_ok=True)
         self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.order_dir.mkdir(parents=True, exist_ok=True)
+        self.packing_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------ settings
 
@@ -101,6 +118,18 @@ class Storage:
             settings["main_split"] = None
         else:
             settings["main_split"] = min(MAIN_SPLIT_MAX, max(MAIN_SPLIT_MIN, float(split)))
+        for key in ("shop_name", "default_note"):
+            if not isinstance(settings.get(key), str):
+                settings[key] = DEFAULT_SETTINGS[key]
+        if not isinstance(settings.get("logo_path"), str) or not settings["logo_path"].strip():
+            settings["logo_path"] = None
+        if not isinstance(settings.get("template_path"), str) or not settings["template_path"].strip():
+            settings["template_path"] = DEFAULT_TEMPLATE_SETTING
+        if settings.get("pdf_engine") not in ("auto", "word", "libreoffice"):
+            settings["pdf_engine"] = "auto"
+        colors = settings.get("cut_colors")
+        if not isinstance(colors, list) or not colors or not all(isinstance(c, str) for c in colors):
+            settings["cut_colors"] = list(DEFAULT_SETTINGS["cut_colors"])
         return settings, None
 
     def save_settings(self, settings: dict) -> None:
@@ -171,21 +200,137 @@ class Storage:
         pieces = data.get("pieces")
         if not isinstance(pieces, list):
             raise PresetError(f"{path.name} has no list of pieces.")
-        clean = []
-        for i, p in enumerate(pieces, 1):
-            if not isinstance(p, dict) or not isinstance(p.get("path"), str):
-                raise PresetError(f"Piece #{i} in {path.name} is missing its file path.")
-            units = p.get("units") if p.get("units") in ("in", "mm", "unknown") else None
-            try:
-                count = max(1, int(p.get("count", 1)))
-            except (TypeError, ValueError):
-                count = 1
-            mtime = p.get("mtime")
-            clean.append({"path": p["path"], "units": units, "count": count,
-                          "mtime": float(mtime) if isinstance(mtime, (int, float)) else None})
-        return {"name": str(data.get("name") or path.stem), "pieces": clean}
+        return {"name": str(data.get("name") or path.stem), "pieces": _clean_pieces(pieces, path.name)}
 
     # ------------------------------------------------------------ control presets
+
+    # ------------------------------------------------------------ order presets
+
+    def list_orders(self) -> list[PresetEntry]:
+        return self._list(self.order_dir, ORDER_KIND)
+
+    def order_path(self, name: str) -> Path:
+        return self._path_for(self.order_dir, name)
+
+    def save_order(self, name: str, packages: list[dict]) -> Path:
+        """packages: [{"name", "preset_name", "quantity", "unsaved_changes", "pieces": [...]}].
+        Pieces are embedded (same format as a package preset) so unsaved edits are kept."""
+        path = self.order_path(name)
+        _write_json(path, {
+            "type": ORDER_KIND, "version": 1, "name": name.strip(),
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "packages": packages,
+        })
+        return path
+
+    def load_order(self, path_or_name) -> dict:
+        path = Path(path_or_name) if isinstance(path_or_name, Path) else self._find(self.order_dir, ORDER_KIND,
+                                                                                    path_or_name)
+        data = self._read(path, ORDER_KIND)
+        packages = data.get("packages")
+        if not isinstance(packages, list) or not packages:
+            raise PresetError(f"{path.name} doesn't list any packages.")
+        clean = []
+        for i, pkg in enumerate(packages, 1):
+            if not isinstance(pkg, dict) or not isinstance(pkg.get("pieces"), list):
+                raise PresetError(f"Package #{i} in {path.name} is missing its list of pieces.")
+            try:
+                qty = max(1, int(pkg.get("quantity", 1)))
+            except (TypeError, ValueError):
+                qty = 1
+            preset = pkg.get("preset_name")
+            clean.append({"name": str(pkg.get("name") or preset or f"Package {i}"),
+                          "preset_name": preset if isinstance(preset, str) and preset else None,
+                          "quantity": qty,
+                          "pieces": _clean_pieces(pkg["pieces"], f"package #{i} in {path.name}")})
+        return {"name": str(data.get("name") or path.stem), "packages": clean}
+
+    # ------------------------------------------------------------ packing lists
+
+    def packing_paths(self, base_name: str) -> tuple[Path, Path]:
+        """(json, pdf) paths for a new packing list, never overwriting an existing one:
+        "<base>", then "<base> (2)", "<base> (3)", ... The .docx sits beside them
+        (json_path.with_suffix(".docx"))."""
+        base = safe_filename(base_name)
+        n = 1
+        while True:
+            stem = base if n == 1 else f"{base} ({n})"
+            paths = [self.packing_dir / f"{stem}{ext}" for ext in (".json", ".pdf", ".docx")]
+            if not any(p.exists() for p in paths):
+                return paths[0], paths[1]
+            n += 1
+
+    def reprint_paths(self, json_path: Path, when: str) -> tuple[Path, Path]:
+        """(docx, pdf) for a re-print, beside the record, never replacing the original:
+        "<stem> (reprint 2026-09-28 1015)", with " 2", " 3", ... if needed."""
+        base = f"{Path(json_path).stem} (reprint {when})"
+        n = 1
+        while True:
+            stem = base if n == 1 else f"{base[:-1]} {n})"
+            docx, pdf = self.packing_dir / f"{stem}.docx", self.packing_dir / f"{stem}.pdf"
+            if not docx.exists() and not pdf.exists():
+                return docx, pdf
+            n += 1
+
+    # ------------------------------------------------------------ templates
+
+    def template_path(self, settings: dict) -> Path:
+        """The packing list template chosen in Settings (relative paths are inside this folder)."""
+        chosen = Path(settings.get("template_path") or DEFAULT_TEMPLATE_SETTING)
+        return chosen if chosen.is_absolute() else self.root / chosen
+
+    def ensure_templates(self, bundled: Path) -> None:
+        """Keep templates/_default/ (the app's pristine copy) current, and create the
+        user's template from it only if it's missing. Never replaces the user's file."""
+        default_dir = self.templates_dir / "_default"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        pristine = default_dir / TEMPLATE_NAME
+        data = Path(bundled).read_bytes()
+        if not pristine.exists() or pristine.read_bytes() != data:
+            tmp = pristine.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, pristine)
+        user = self.templates_dir / TEMPLATE_NAME
+        if not user.exists():
+            user.write_bytes(data)
+
+    def restore_default_template(self) -> Path:
+        """A fresh copy of the default template under a new name (never overwrites)."""
+        pristine = self.templates_dir / "_default" / TEMPLATE_NAME
+        if not pristine.exists():
+            raise PresetError("The default template is missing from templates/_default/. Restart TallyCraft to "
+                              "restore it.")
+        base = self.templates_dir / "packing_list_template (default copy)"
+        n = 1
+        while True:
+            target = Path(f"{base}.docx") if n == 1 else Path(f"{base} {n}.docx")
+            if not target.exists():
+                target.write_bytes(pristine.read_bytes())
+                return target
+            n += 1
+
+    def save_packing_record(self, json_path: Path, record: dict) -> None:
+        _write_json(json_path, record)
+
+    def list_packing_lists(self) -> list[PresetEntry]:
+        """Newest first (names start with the order date)."""
+        if not self.packing_dir.exists():
+            return []
+        files = sorted(self.packing_dir.glob("*.json"), key=lambda p: p.stem.lower(), reverse=True)
+        return [PresetEntry(f.stem, f) for f in files]
+
+    def load_packing_record(self, path: Path) -> dict:
+        from .packing import RecordError, validate_record
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise PresetError(f"The packing list {Path(path).name} no longer exists.") from None
+        except (OSError, ValueError) as exc:
+            raise PresetError(f"The packing list {Path(path).name} is damaged or unreadable ({exc}).") from None
+        try:
+            return validate_record(data)
+        except RecordError as exc:
+            raise PresetError(f"{Path(path).name}: {exc}") from None
 
     def list_controls(self) -> list[PresetEntry]:
         return self._list(self.control_dir, CONTROL_KIND)
@@ -248,8 +393,27 @@ class Storage:
                 "unit": unit, "weight_g": _as_text(data.get("weight_g"))}
 
 
+ORDER_KIND = "tallycraft.order"
 PACKAGE_KIND = "tallycraft.package"
 CONTROL_KIND = "tallycraft.control"
+
+
+def _clean_pieces(pieces: list, where: str) -> list[dict]:
+    """Validate a package-preset style "pieces" list (shared by package and order files)."""
+    clean = []
+    for i, p in enumerate(pieces, 1):
+        if not isinstance(p, dict) or not isinstance(p.get("path"), str):
+            raise PresetError(f"Piece #{i} in {where} is missing its file path.")
+        units = p.get("units") if p.get("units") in ("in", "mm", "unknown") else None
+        try:
+            count = max(1, int(p.get("count", 1)))
+        except (TypeError, ValueError):
+            count = 1
+        mtime = p.get("mtime")
+        clean.append({"path": p["path"], "units": units, "count": count,
+                      "mtime": float(mtime) if isinstance(mtime, (int, float)) and not isinstance(mtime, bool)
+                      else None})
+    return clean
 
 
 def _as_text(v) -> str:

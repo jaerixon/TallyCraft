@@ -23,8 +23,27 @@ It gives you:
 - the item total for each piece (weight × count per kit), and
 - the **package total** in grams and in **lb + oz**.
 
-Save a kit as a *Package Preset* and a plywood batch as a *Calibration Preset*. The next shipment
-then takes two clicks.
+Save each product as a *Package Preset* and a plywood batch as a *Calibration Preset*. The next
+shipment then takes two clicks.
+
+**Orders with several products.** An order is a list of packages, each with a quantity, such as
+2 × "XL Standard Box" plus 1 × "Mini Tunnel + Ramp". Results merge the whole order, with one row per
+unique piece and one count column per kit, giving one shipping weight. A normal sale is just an
+order with one package.
+
+**Packing lists.** One click after Calculate produces a printable **packing list** (PDF + Word).
+It has the customer and order details, the total shipping weight, and every part with a small
+drawing, per-kit counts, weights, and a checkbox for the packer. **You control the look** by
+editing a Word template; TallyCraft fills in the data. PDFs are made with LibreOffice (a few
+seconds) or Microsoft Word. Each list is saved with a JSON record, so it can be re-printed later,
+even if the DXF files change.
+
+**SolidWorks and LightBurn files.** Black lines are cut; every other color is engraving, drawn in
+pictures but never weighed. LightBurn DXF exports (which don't state units) are read as
+millimeters.
+
+> **Tip:** name package presets exactly like your Etsy listing variations. A future Etsy
+> integration will match orders to presets by name.
 
 ## Download
 
@@ -58,7 +77,8 @@ automatically. You never have to measure it.
 shapes. TallyCraft:
 
 1. Reads `LINE`, `ARC`, `CIRCLE`, `SPLINE`, `ELLIPSE`, `LWPOLYLINE`/`POLYLINE`, and block
-   references.
+   references. Only **black** geometry (ACI 7 or RGB 0,0,0, configurable) counts as cut lines;
+   other colors are engrave-only.
 2. Converts arcs and circles into straight segments of 2° or less. Splines and ellipses are
    flattened even more finely (area error under 0.01%).
 3. Joins segments into closed loops wherever their endpoints meet (within 0.0001 units).
@@ -102,6 +122,7 @@ Tests: `.venv\Scripts\python -m pytest`.
 
 - [Building & releasing](docs/BUILDING.md)
 - [Design spec](docs/SPEC.md)
+- [Packing list template fields](docs/TEMPLATE_FIELDS.md)
 - [Progress log](docs/PROGRESS.md)
 
 ## License

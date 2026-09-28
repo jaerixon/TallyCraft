@@ -28,3 +28,7 @@ Thumbs.db
 /settings.json.bak
 /package_presets/
 /control_presets/
+/order_presets/
+/packing_lists/
+/backups/
+/tests/fixtures_private/

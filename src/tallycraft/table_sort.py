@@ -52,6 +52,15 @@ def order_results(lines: Sequence[ResultLine], skipped: Sequence[SkippedLine],
     always stay at the bottom regardless of sort direction."""
     shown: list = list(lines)
     if column is not None:
-        shown = _sorted(list(enumerate(lines)), RESULT_SORT_KEYS[column], descending)
+        shown = _sorted(list(enumerate(lines)), result_sort_key(column), descending)
         shown = [lines[i] for i in shown]
     return shown + list(skipped)
+
+
+def result_sort_key(column: str) -> Callable[[ResultLine], object]:
+    """Fixed columns, or "kit<N>" for the N-th per-kit count column (numeric;
+    a dash — the kit doesn't use the piece — counts as 0)."""
+    if column.startswith("kit"):
+        index = int(column[3:])
+        return lambda l: (l.kit_counts[index] or 0) if index < len(l.kit_counts) else 0
+    return RESULT_SORT_KEYS[column]

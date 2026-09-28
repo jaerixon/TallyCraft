@@ -78,7 +78,8 @@ def validate_control(length: str, width: str, unit: str, weight: str) -> tuple[C
 class PieceInput:
     name: str
     area_cm2: float
-    count: int
+    count: int  # total pieces across the whole order
+    kit_counts: tuple = ()  # per individual kit: that kit's count, or None if unused
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,7 @@ class ResultLine:
     weight_per_piece_g: float
     count: int
     item_total_g: float
+    kit_counts: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class SkippedLine:
     name: str
     count: int
     reason: str
+    kit_counts: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,7 @@ class CalcResult:
     total_g: float
     grams_per_cm2: float
     skipped: list[SkippedLine] = ()
+    kit_labels: tuple = ()  # one per individual kit, e.g. "XL Standard Box (1 of 2)"
 
     @property
     def incomplete(self) -> bool:
@@ -116,24 +120,40 @@ class CalcResult:
 
 
 def calculate(pieces: list[PieceInput], control: ControlSample,
-              skipped: list[SkippedLine] = ()) -> CalcResult:
+              skipped: list[SkippedLine] = (), kit_labels: tuple = ()) -> CalcResult:
+    """`control` is any calibration with a .grams_per_cm2 (control sample or reference piece)."""
     gpc = control.grams_per_cm2
     lines = []
     for p in pieces:
         per = gpc * p.area_cm2
-        lines.append(ResultLine(p.name, per, p.count, per * p.count))
-    return CalcResult(lines, sum(l.item_total_g for l in lines), gpc, list(skipped))
+        lines.append(ResultLine(p.name, per, p.count, per * p.count, tuple(p.kit_counts)))
+    return CalcResult(lines, sum(l.item_total_g for l in lines), gpc, list(skipped), tuple(kit_labels))
 
 
 SKIPPED_LABEL = "Skipped - not included"
 
 
+def kit_cell(count) -> str:
+    """A per-kit count cell: the kit's own count, or a dash if the kit doesn't use the piece."""
+    return "—" if count is None else str(count)
+
+
 def results_as_text(result: CalcResult, calibration_note: str = "") -> str:
-    """Tab-separated table for pasting into a spreadsheet or email."""
-    out = ["File Name\tWeight per piece (g)\tCount\tItem Total (g)"]
-    out += [f"{l.name}\t{l.weight_per_piece_g:.2f}\t{l.count}\t{l.item_total_g:.2f}" for l in result.lines]
-    out += [f"{s.name}\t{SKIPPED_LABEL}\t{s.count}\t{SKIPPED_LABEL}" for s in result.skipped]
-    total = f"Package Total\t\t\t{result.total_g:.1f} g ({format_lb_oz(result.total_g)})"
+    """Tab-separated table for pasting into a spreadsheet or email. Columns match
+    the Results table: File Name, one column per kit, Total Count, weights."""
+    kits = list(result.kit_labels)
+
+    def kit_cells(counts) -> list[str]:
+        counts = list(counts) + [None] * (len(kits) - len(counts))
+        return [kit_cell(c) for c in counts[:len(kits)]]
+
+    out = ["\t".join(["File Name", *kits, "Total Count", "Weight per piece (g)", "Item Total (g)"])]
+    out += ["\t".join([l.name, *kit_cells(l.kit_counts), str(l.count), f"{l.weight_per_piece_g:.2f}",
+                       f"{l.item_total_g:.2f}"]) for l in result.lines]
+    out += ["\t".join([s.name, *kit_cells(s.kit_counts), str(s.count), SKIPPED_LABEL, SKIPPED_LABEL])
+            for s in result.skipped]
+    total = "\t".join(["Package Total", *[""] * len(kits), "", "",
+                       f"{result.total_g:.1f} g ({format_lb_oz(result.total_g)})"])
     if result.incomplete:
         total += f"\t{result.incomplete_note.upper()} - NOT A COMPLETE SHIPPING WEIGHT"
     out.append(total)

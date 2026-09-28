@@ -6,7 +6,6 @@ import pytest
 from tallycraft.calc import ControlSample, PieceInput, calculate, results_as_text
 from tallycraft.calibration import (ReferencePiece, SavedReference, describe, parse_positive_int,
                                     validate_reference)
-from tallycraft.messages import Level
 from tallycraft.pieces import PieceRow
 from tallycraft.storage import PresetError, Storage
 

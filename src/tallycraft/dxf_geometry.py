@@ -10,6 +10,10 @@ Pipeline (see docs/SPEC.md §5):
   4. Shoelace area per loop; largest loop is the outer boundary; net area =
      outer - sum(other loops).
 
+Color rule (v0.4): only geometry drawn in a *cut color* (default: black, i.e.
+ACI 7 or true-color RGB 0,0,0) is cut. Everything else is engrave-only: kept for
+drawing, never stitched, never counted, never an error. See SPEC §5.1.
+
 Nothing here scales coordinates: areas and bounding boxes are in raw file
 units, so a user's Units correction is a pure reinterpretation.
 """
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -46,6 +51,14 @@ INSUNITS_NAMES = {
     24: "US survey miles",
 }
 INSUNITS_TO_UNIT = {1: "in", 4: "mm"}
+# A unitless file wider than this (in its own numbers) can't sensibly be inches
+# (60 in = 1.5 m, bigger than typical laser beds), so it's assumed to be mm.
+MM_ONLY_SIZE = 60.0
+
+# Colors are compared as ("aci", n) or ("rgb", (r, g, b)).
+ColorKey = tuple
+DEFAULT_CUT_COLORS: tuple[ColorKey, ...] = (("aci", 7), ("rgb", (0, 0, 0)))
+DEFAULT_CUT_COLOR_SPECS = ["ACI 7", "RGB 0,0,0"]
 
 # Entity types that carry no cut geometry: skipped with an Info note.
 NON_GEOMETRY_TYPES = {
@@ -77,7 +90,8 @@ class ParsedPiece:
 
     path: str
     header_unit: str = "unknown"  # "in" | "mm" | "unknown"
-    header_unit_note: str = ""  # why header_unit is unknown (shown by the row model)
+    header_unit_note: str = ""  # why header_unit is unknown, or why mm was assumed (shown by the row model)
+    units_assumed: bool = False  # True: no units in the file, millimeters assumed
     loops: list[list[Point]] = field(default_factory=list)
     bbox_raw: tuple[float, float] | None = None  # (width, height)
     net_area_raw: float | None = None  # None when geometry is in error
@@ -86,6 +100,7 @@ class ParsedPiece:
     loop_depths: list[int] = field(default_factory=list)  # per loop; even = solid, odd = hole
     open_chains: list[list[Point]] = field(default_factory=list)  # runs that never closed
     error_points: list[Point] = field(default_factory=list)  # loose ends / bad junctions
+    engrave: list[list[Point]] = field(default_factory=list)  # engrave-only polylines (drawn, never measured)
 
     @property
     def status(self) -> Level:
@@ -99,19 +114,27 @@ class ParsedPiece:
 # Public entry point
 # --------------------------------------------------------------------------
 
-def parse_dxf(path: str, ignored_layers: list[str] | tuple[str, ...] = ()) -> ParsedPiece:
+def parse_dxf(path: str, ignored_layers: list[str] | tuple[str, ...] = (),
+              cut_colors=None) -> ParsedPiece:
     """Read a DXF and compute its net area. Never raises for bad input files;
-    problems are reported as messages on the returned piece."""
+    problems are reported as messages on the returned piece.
+
+    cut_colors: color keys that mean "cut" (default DEFAULT_CUT_COLORS)."""
     piece = ParsedPiece(path=path)
+    cut = frozenset(cut_colors if cut_colors is not None else DEFAULT_CUT_COLORS)
     try:
         doc = _read_document(path, piece)
         if doc is None:
             return piece
-        _read_units(doc, piece)
-        chains, closed = _collect_geometry(doc, piece, {n.strip().upper() for n in ignored_layers})
+        units_code = _read_units(doc, piece)
+        chains, closed, n_engrave = _collect_geometry(doc, piece, {n.strip().upper() for n in ignored_layers}, cut)
+        if not (chains or closed) and n_engrave:
+            piece.add(Level.ERROR, "No cut (black) lines found. Check the colors in this file.")
+            return piece
         if piece.status >= Level.ERROR and not (chains or closed):
             return piece
         _build_area(chains, closed, piece)
+        _assume_mm_if_obvious(doc, piece, units_code)
     except Exception as exc:  # last-resort guard: one bad file must not crash the batch
         piece.net_area_raw = None
         piece.add(Level.ERROR, f"TallyCraft couldn't read this file because of an unexpected problem: {exc}")
@@ -140,8 +163,19 @@ def _read_document(path: str, piece: ParsedPiece):
         piece.add(Level.ERROR, f"Windows wouldn't let TallyCraft read this file ({exc.strerror or exc}).")
         return None
 
+    # Plain readfile first: ezdxf.recover drops every entity of LightBurn exports
+    # (they reuse entity handles), while readfile loads them fine. Recover mode is
+    # only used for files readfile rejects as damaged.
+    import logging
+    ez_log = logging.getLogger("ezdxf")
+    old_level = ez_log.level
+    ez_log.setLevel(logging.ERROR)  # e.g. LightBurn's "non-unique entity handle" chatter
     try:
-        doc, auditor = recover.readfile(path)
+        try:
+            doc = ezdxf.readfile(path)
+            return doc
+        except ezdxf.DXFStructureError:
+            doc, auditor = recover.readfile(path)
     except PermissionError:
         piece.add(Level.ERROR, "Windows wouldn't let TallyCraft open this file. Is it open in another program?")
         return None
@@ -154,6 +188,8 @@ def _read_document(path: str, piece: ParsedPiece):
     except Exception as exc:
         piece.add(Level.ERROR, f"This file couldn't be read as a DXF ({exc}).")
         return None
+    finally:
+        ez_log.setLevel(old_level)
 
     if auditor.has_errors:
         piece.add(Level.WARNING,
@@ -162,7 +198,8 @@ def _read_document(path: str, piece: ParsedPiece):
     return doc
 
 
-def _read_units(doc, piece: ParsedPiece) -> None:
+def _read_units(doc, piece: ParsedPiece) -> int:
+    """Sets header_unit from $INSUNITS; returns the code (0 = missing / unitless)."""
     try:
         code = int(doc.header.get("$INSUNITS", 0))
     except (TypeError, ValueError):
@@ -170,13 +207,113 @@ def _read_units(doc, piece: ParsedPiece) -> None:
     unit = INSUNITS_TO_UNIT.get(code)
     if unit:
         piece.header_unit = unit
-        return
+        return code
     piece.header_unit = "unknown"
     said = INSUNITS_NAMES.get(code, f"an unrecognized code ({code})")
     if code == 0:
         piece.header_unit_note = "The file doesn't say what units it uses."
     else:
         piece.header_unit_note = f"The file says its units are {said}, which TallyCraft doesn't support directly."
+    return code
+
+
+def looks_like_lightburn(doc) -> bool:
+    """LightBurn exports: R12 (AC1009) with layers named Layer_0, Layer_1, ..."""
+    return doc.dxfversion == "AC1009" and any(re.fullmatch(r"Layer_\d+", l.dxf.name) for l in doc.layers)
+
+
+def _assume_mm_if_obvious(doc, piece: ParsedPiece, units_code: int) -> None:
+    """No stated units: assume mm for LightBurn exports (always mm) or for parts too
+    big to be inches. Any other unitless file stays Unknown (the user must choose)."""
+    if piece.header_unit != "unknown" or units_code != 0:
+        return
+    size = max(piece.bbox_raw) if piece.bbox_raw else 0.0
+    if looks_like_lightburn(doc):
+        why = "it looks like a LightBurn export, and LightBurn always uses mm"
+    elif size > MM_ONLY_SIZE:
+        why = f"at {size:,.0f} units across it would be over {MM_ONLY_SIZE / 12:.0f} feet in inches"
+    else:
+        return
+    piece.header_unit = "mm"
+    piece.units_assumed = True
+    piece.header_unit_note = f"Units not stated in file, assumed millimeters ({why})."
+
+
+# --------------------------------------------------------------------------
+# Colors: black = cut, anything else = engrave only
+# --------------------------------------------------------------------------
+
+def parse_color_spec(text: str) -> ColorKey:
+    """ "ACI 7" / "7" -> ("aci", 7); "RGB 0,0,0" / "0,0,0" -> ("rgb", (0, 0, 0)).
+    Raises ValueError with a plain message."""
+    raw = text.strip()
+    body = re.sub(r"^(aci|rgb)\s*", "", raw, flags=re.I)
+    if "," in body:
+        parts = [p.strip() for p in body.split(",")]
+        try:
+            rgb = tuple(int(p) for p in parts)
+        except ValueError:
+            rgb = ()
+        if len(rgb) != 3 or not all(0 <= v <= 255 for v in rgb):
+            raise ValueError(f"\"{raw}\" isn't a color. Use an ACI number like 7, or R,G,B like 0,0,0.")
+        return ("rgb", rgb)
+    try:
+        aci = int(body)
+    except ValueError:
+        raise ValueError(f"\"{raw}\" isn't a color. Use an ACI number like 7, or R,G,B like 0,0,0.") from None
+    if not 1 <= aci <= 255:
+        raise ValueError(f"ACI color {aci} is out of range (1–255).")
+    return ("aci", aci)
+
+
+def cut_colors_from_settings(specs) -> tuple[ColorKey, ...]:
+    """Settings list -> color keys; falls back to black if empty or unusable."""
+    keys = []
+    for spec in specs or []:
+        try:
+            keys.append(parse_color_spec(str(spec)))
+        except ValueError:
+            pass
+    return tuple(keys) or DEFAULT_CUT_COLORS
+
+
+def _true_color_key(value) -> ColorKey | None:
+    if value is None:
+        return None
+    v = int(value)
+    return ("rgb", ((v >> 16) & 255, (v >> 8) & 255, v & 255))
+
+
+def _layer_color_map(doc) -> dict[str, ColorKey]:
+    colors = {}
+    for layer in doc.layers:
+        key = _true_color_key(layer.dxf.get("true_color"))
+        colors[layer.dxf.name.upper()] = key or ("aci", abs(int(layer.dxf.get("color", 7))) or 7)
+    return colors
+
+
+@dataclass
+class _ColorCtx:
+    layers: dict[str, ColorKey]
+    cut: frozenset
+    byblock: ColorKey | None = None  # effective color of the enclosing block reference
+    block_layer: str | None = None  # layer of the enclosing block reference (for layer "0")
+
+
+def effective_color(entity, ctx: _ColorCtx) -> ColorKey:
+    """True color, else ACI; BYLAYER from the layer, BYBLOCK from the parent INSERT."""
+    tc = _true_color_key(entity.dxf.get("true_color"))
+    if tc:
+        return tc
+    aci = int(entity.dxf.get("color", 256))
+    if aci == 256:  # BYLAYER
+        layer = str(entity.dxf.get("layer", "0")).upper()
+        if layer == "0" and ctx.block_layer:  # layer 0 inside a block takes the reference's layer
+            layer = ctx.block_layer.upper()
+        return ctx.layers.get(layer, ("aci", 7))
+    if aci == 0:  # BYBLOCK
+        return ctx.byblock or ("aci", 7)
+    return ("aci", abs(aci))
 
 
 # --------------------------------------------------------------------------
@@ -191,9 +328,21 @@ class _Collect:
     unsupported: Counter = field(default_factory=Counter)
     skipped_layers: Counter = field(default_factory=Counter)
     problems: list[str] = field(default_factory=list)
+    engrave: list[list[Point]] = field(default_factory=list)  # engrave-only polylines
+    engrave_items: int = 0  # engrave-only entities seen
+    engrave_unsupported: Counter = field(default_factory=Counter)  # can't draw, but harmless
+
+    def add_open(self, pts: list[Point], cut: bool) -> None:
+        (self.chains if cut else self.engrave).append(pts)
+
+    def add_closed(self, pts: list[Point], cut: bool) -> None:
+        if cut:
+            self.closed.append(pts)
+        else:
+            self.engrave.append(list(pts) + [pts[0]])
 
 
-def _collect_geometry(doc, piece: ParsedPiece, ignored_layers: set[str]):
+def _collect_geometry(doc, piece: ParsedPiece, ignored_layers: set[str], cut: frozenset):
     hidden_layers = set()
     for layer in doc.layers:
         try:
@@ -203,8 +352,9 @@ def _collect_geometry(doc, piece: ParsedPiece, ignored_layers: set[str]):
             pass
 
     acc = _Collect()
+    ctx = _ColorCtx(_layer_color_map(doc), cut)
     for entity in doc.modelspace():
-        _visit(entity, acc, ignored_layers, hidden_layers, depth=0)
+        _visit(entity, acc, ignored_layers, hidden_layers, depth=0, ctx=ctx)
 
     for (layer_name, why), n in sorted(acc.skipped_layers.items()):
         piece.add(Level.INFO, f"Skipped {n} item(s) on layer \"{layer_name}\" ({why}).")
@@ -218,12 +368,20 @@ def _collect_geometry(doc, piece: ParsedPiece, ignored_layers: set[str]):
                   "Re-export the design with curves converted to lines and arcs (or polylines).")
     for text in acc.problems:
         piece.add(Level.ERROR, text)
+    if acc.engrave_items:
+        piece.add(Level.INFO, f"{acc.engrave_items} engrave-only item{'s' if acc.engrave_items != 1 else ''} "
+                              "drawn but not counted in weight.")
+    if acc.engrave_unsupported:
+        parts = ", ".join(f"{n} {t}" for t, n in sorted(acc.engrave_unsupported.items()))
+        piece.add(Level.INFO, f"Some engrave-only items can't be drawn in the preview ({parts}). "
+                              "They don't affect the weight.")
+    piece.engrave = acc.engrave
     if acc.unsupported or acc.problems:
         piece.net_area_raw = None
-    return acc.chains, acc.closed
+    return acc.chains, acc.closed, acc.engrave_items
 
 
-def _visit(entity, acc: _Collect, ignored_layers, hidden_layers, depth: int) -> None:
+def _visit(entity, acc: _Collect, ignored_layers, hidden_layers, depth: int, ctx: _ColorCtx) -> None:
     t = entity.dxftype()
     layer = str(entity.dxf.get("layer", "0"))
     layer_key = layer.upper()
@@ -233,35 +391,12 @@ def _visit(entity, acc: _Collect, ignored_layers, hidden_layers, depth: int) -> 
     if layer_key in hidden_layers:
         acc.skipped_layers[(layer, "layer is turned off or frozen")] += 1
         return
+    if t in NON_GEOMETRY_TYPES:
+        acc.ignored_types[t] += 1
+        return
 
-    if t == "LINE":
-        s, e = entity.dxf.start, entity.dxf.end
-        acc.chains.append([(s.x, s.y), (e.x, e.y)])
-    elif t == "ARC":
-        pts = _arc_points(entity)
-        if pts is None:  # start == end angle: a full circle drawn as an arc
-            acc.closed.append(_circle_points(entity))
-        else:
-            acc.chains.append(pts)
-    elif t == "CIRCLE":
-        if entity.dxf.radius <= 0:
-            return
-        acc.closed.append(_circle_points(entity))
-    elif t in ("SPLINE", "ELLIPSE"):
-        try:
-            pts = _curve_points(entity)
-        except Exception as exc:
-            acc.problems.append(f"A {t.lower()} curve couldn't be converted into line segments ({exc}).")
-            return
-        if len(pts) < 2:
-            return
-        if len(pts) >= 4 and _close(pts[0], pts[-1]):
-            acc.closed.append(pts[:-1])  # closed spline / full ellipse is its own loop
-        else:
-            acc.chains.append(pts)
-    elif t == "LWPOLYLINE" or (t == "POLYLINE" and _is_flat_polyline(entity)):
-        _visit_polyline(entity, acc)
-    elif t == "INSERT":
+    color = effective_color(entity, ctx)
+    if t == "INSERT":
         if depth >= MAX_BLOCK_DEPTH:
             acc.problems.append("Block references are nested too deeply to read safely.")
             return
@@ -271,12 +406,48 @@ def _visit(entity, acc: _Collect, ignored_layers, hidden_layers, depth: int) -> 
             acc.problems.append(f"A block reference (INSERT \"{entity.dxf.get('name', '?')}\") "
                                 f"couldn't be expanded ({exc}).")
             return
+        inner = _ColorCtx(ctx.layers, ctx.cut, byblock=color, block_layer=layer)
         for child in children:
-            _visit(child, acc, ignored_layers, hidden_layers, depth + 1)
-    elif t in NON_GEOMETRY_TYPES:
-        acc.ignored_types[t] += 1
-    else:
+            _visit(child, acc, ignored_layers, hidden_layers, depth + 1, inner)
+        return
+
+    cut = color in ctx.cut
+    if not cut:
+        acc.engrave_items += 1
+    if t == "LINE":
+        s, e = entity.dxf.start, entity.dxf.end
+        acc.add_open([(s.x, s.y), (e.x, e.y)], cut)
+    elif t == "ARC":
+        pts = _arc_points(entity)
+        if pts is None:  # start == end angle: a full circle drawn as an arc
+            acc.add_closed(_circle_points(entity), cut)
+        else:
+            acc.add_open(pts, cut)
+    elif t == "CIRCLE":
+        if entity.dxf.radius <= 0:
+            return
+        acc.add_closed(_circle_points(entity), cut)
+    elif t in ("SPLINE", "ELLIPSE"):
+        try:
+            pts = _curve_points(entity)
+        except Exception as exc:
+            if cut:
+                acc.problems.append(f"A {t.lower()} curve couldn't be converted into line segments ({exc}).")
+            else:
+                acc.engrave_unsupported[t] += 1
+            return
+        if len(pts) < 2:
+            return
+        if len(pts) >= 4 and _close(pts[0], pts[-1]):
+            acc.add_closed(pts[:-1], cut)  # closed spline / full ellipse is its own loop
+        else:
+            acc.add_open(pts, cut)
+    elif t == "LWPOLYLINE" or (t == "POLYLINE" and _is_flat_polyline(entity)):
+        _visit_polyline(entity, acc, cut)
+    elif cut:
         acc.unsupported[t] += 1
+    else:
+        acc.engrave_unsupported[t] += 1  # engrave-only: never an error
 
 
 def _is_flat_polyline(entity) -> bool:
@@ -288,7 +459,7 @@ def _is_flat_polyline(entity) -> bool:
     return False  # polyface / polygon mesh
 
 
-def _visit_polyline(entity, acc: _Collect) -> None:
+def _visit_polyline(entity, acc: _Collect, cut: bool = True) -> None:
     pts: list[Point] = []
     for sub in entity.virtual_entities():
         st = sub.dxftype()
@@ -297,7 +468,7 @@ def _visit_polyline(entity, acc: _Collect) -> None:
         elif st == "ARC":
             seg = _arc_points(sub) or _circle_points(sub)
         else:
-            acc.unsupported[st] += 1
+            (acc.unsupported if cut else acc.engrave_unsupported)[st] += 1
             continue
         if pts and _close(pts[-1], seg[0]):
             pts.extend(seg[1:])
@@ -305,14 +476,14 @@ def _visit_polyline(entity, acc: _Collect) -> None:
             pts.extend(reversed(seg[:-1]))
         else:
             if pts:
-                acc.chains.append(pts)
+                acc.add_open(pts, cut)
             pts = list(seg)
     if len(pts) < 2:
         return
     if entity.is_closed and _close(pts[0], pts[-1]) and len(pts) >= 4:
-        acc.closed.append(pts[:-1])
+        acc.add_closed(pts[:-1], cut)
     else:
-        acc.chains.append(pts)
+        acc.add_open(pts, cut)
 
 
 def _arc_points(arc) -> list[Point] | None:

@@ -13,6 +13,7 @@ SOLID_FILL = "#ecd3ad"      # plywood
 SOLID_LINE = "#6b4423"      # outer boundary (and islands)
 HOLE_LINE = "#1f6fb2"       # holes / cutouts
 OPEN_LINE = "#e07b00"       # runs that never closed
+ENGRAVE_LINE = "#7fa07f"    # engrave-only artwork: drawn thin and light, never measured
 ERROR_MARK = "#d00000"      # loose ends / bad junctions
 TEXT = "#333333"
 HINT = "#777777"
@@ -53,13 +54,14 @@ class PiecePreview(tk.Canvas):
             return
 
         piece = row.parsed
-        if not piece.loops and not piece.open_chains:
+        if not piece.loops and not piece.open_chains and not piece.engrave:
             reason = next((m.text for m in row.messages if m.level == Level.ERROR),
                           "No geometry was found in this file.")
             self._center_text(f"No preview available\n\n{reason}", TEXT, title=True)
             return
 
-        pts = [p for l in piece.loops for p in l] + [p for c in piece.open_chains for p in c] + piece.error_points
+        pts = ([p for l in piece.loops for p in l] + [p for c in piece.open_chains for p in c] + piece.error_points
+               + [p for e in piece.engrave for p in e])
         minx = min(p[0] for p in pts)
         maxx = max(p[0] for p in pts)
         miny = min(p[1] for p in pts)
@@ -95,6 +97,9 @@ class PiecePreview(tk.Canvas):
             else:
                 has_hole = True
                 self.create_polygon(flat(loop), fill=BG if measured else "", outline=HOLE_LINE, width=1.5)
+        for line in piece.engrave:  # on top of the fill, thinner than cut lines
+            if len(line) >= 2:
+                self.create_line(flat(line), fill=ENGRAVE_LINE, width=1)
         for chain in piece.open_chains:
             if len(chain) >= 2:
                 self.create_line(flat(chain), fill=OPEN_LINE, width=2, dash=(6, 3))
@@ -112,6 +117,8 @@ class PiecePreview(tk.Canvas):
         legend = [("outline", SOLID_LINE, "rect")]
         if has_hole:
             legend.append(("hole", HOLE_LINE, "rect"))
+        if piece.engrave:
+            legend.append(("engrave", ENGRAVE_LINE, "thin"))
         if piece.open_chains:
             legend.append(("unclosed", OPEN_LINE, "line"))
         if piece.error_points:
@@ -122,6 +129,8 @@ class PiecePreview(tk.Canvas):
             x0 = self.bbox(t)[0]
             if kind == "rect":
                 self.create_rectangle(x0 - 16, fy - 5, x0 - 5, fy + 5, outline=color, width=2)
+            elif kind == "thin":
+                self.create_line(x0 - 18, fy, x0 - 4, fy, fill=color, width=1)
             elif kind == "line":
                 self.create_line(x0 - 18, fy, x0 - 4, fy, fill=color, width=2, dash=(4, 2))
             else:

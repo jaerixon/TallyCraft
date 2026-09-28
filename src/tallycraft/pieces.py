@@ -31,13 +31,13 @@ class PieceRow:
 
     @classmethod
     def load(cls, path: str, ignored_layers=(), unit: str | None = None, count: int = 1,
-             stored_mtime: float | None = None) -> "PieceRow":
-        parsed = parse_dxf(path, ignored_layers)
+             stored_mtime: float | None = None, saved_what: str = "preset", cut_colors=None) -> "PieceRow":
+        parsed = parse_dxf(path, ignored_layers, cut_colors)
         row = cls(path=path, parsed=parsed, unit=unit or parsed.header_unit,
                   count=max(1, int(count)), mtime=file_mtime(path))
         if stored_mtime is not None and row.mtime is not None and abs(row.mtime - stored_mtime) > MTIME_SLACK_S:
             row.extra.append(Message(Level.WARNING,
-                                     "This file has been modified since this preset was saved — "
+                                     f"This file has been modified since this {saved_what} was saved — "
                                      "recommend re-importing/reviewing."))
         return row
 
@@ -57,9 +57,14 @@ class PieceRow:
             note = self.parsed.header_unit_note or "The units for this file are unknown."
             msgs.append(Message(Level.ERROR, f"{note} Choose Inches or Millimeters in the Units column."))
         elif self.unit != header:
-            said = UNIT_LABELS[header].lower() if header in UNIT_TO_CM else "unknown"
+            if self.parsed.units_assumed:
+                said = f"doesn't say; TallyCraft assumed {UNIT_LABELS[header].lower()}"
+            else:
+                said = f"says {UNIT_LABELS[header].lower()}" if header in UNIT_TO_CM else "says unknown"
             msgs.append(Message(Level.INFO, f"Units manually set to {UNIT_LABELS[self.unit]} "
-                                            f"(the file itself says {said})."))
+                                            f"(the file itself {said})."))
+        elif self.parsed.units_assumed:
+            msgs.append(Message(Level.INFO, self.parsed.header_unit_note))
         return msgs + self.parsed.messages + self.extra
 
     @property

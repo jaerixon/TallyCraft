@@ -1,6 +1,5 @@
 import json
 import os
-import time
 
 import pytest
 
@@ -52,7 +51,7 @@ def test_skipped_rows_are_excluded_and_flagged():
     assert res.total_g == pytest.approx(40.0)  # skipped rows contribute nothing
     assert res.incomplete and res.incomplete_note == "Incomplete: 2 files skipped"
     text = results_as_text(res)
-    assert "bad.dxf\tSkipped - not included\t3" in text
+    assert "bad.dxf\t3\tSkipped - not included\tSkipped - not included" in text
     assert "INCOMPLETE: 2 FILES SKIPPED" in text
     assert "Skipped: worse.dxf - File not found" in text
 
