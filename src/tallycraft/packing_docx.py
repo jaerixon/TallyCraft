@@ -21,8 +21,9 @@ from .calc import format_lb_oz
 from .packing import calibration_text, decode_logo, part_name, stamp
 
 PARTS_TABLE_ALT_TEXT = "TallyCraft parts table"
+TOTALS_TABLE_ALT_TEXT = "TallyCraft totals row"  # optional: the totals as a one-row table inside the parts table
 PICTURE_DPI = 400  # printed resolution of part pictures (the brief asks for at least 300)
-PICTURE_HEIGHT_IN = 0.72
+PICTURE_HEIGHT_IN = 0.5
 SUPERSAMPLE = 3  # draw big, then shrink: smooth lines without an anti-aliasing library
 
 
@@ -94,17 +95,21 @@ FIELDS: list[Field] = [
     Field("grams_per_in2", "Weight per area, g/in², 5 decimals.", "2.93200", "Shop record"),
     Field("calculated_at", "When Calculate was pressed.", "2026-09-28 10:15", "Shop record"),
     Field("created_at", "When the packing list was created.", "2026-09-28 10:20", "Shop record"),
-    Field("app_version", "TallyCraft version.", "0.4.0", "Shop record"),
+    Field("app_version", "TallyCraft version.", "0.5.0", "Shop record"),
     Field("shop_record", "The whole small-print shop record in one line.",
-          "Calibration: … Calculated 2026-09-28 10:15. Packing list created 2026-09-28 10:20. TallyCraft 0.4.0.",
+          "Calibration: … Calculated 2026-09-28 10:15. Packing list created 2026-09-28 10:20. TallyCraft 0.5.0.",
           "Shop record"),
 ]
 
 PART_FIELDS: list[Field] = [
     Field("picture", "Drawing of the part (cut lines solid, engrave lines light), fitted to the Picture column.",
           "(image)", "Each part (p.…)"),
-    Field("dimensions", "Bounding box size.", "14.500 × 14.250 in", "Each part (p.…)"),
-    Field("name", "Part name (file name without .dxf).", "XL v1 - Main Box - Front Panel v2 - x3", "Each part (p.…)"),
+    Field("dimensions", "Bounding box size, in the unit chosen in Settings (\"Show dimensions in\").",
+          "14.500 × 14.250 in", "Each part (p.…)"),
+    Field("display_name", "The name to show: the Display name set in the pieces table, or the file name "
+                          "(without .dxf) if none is set.", "Front Panel", "Each part (p.…)"),
+    Field("name", "The file name without .dxf (always, even if a Display name is set).",
+          "XL v1 - Main Box - Front Panel v2 - x3", "Each part (p.…)"),
     Field("marker", "Footnote marker for unmeasured parts (\" *1\"); empty otherwise.", " *1", "Each part (p.…)"),
     Field("counts", "This part's count in each kit column, for {%tc for c in p.counts %} {{ c }} {%tc endfor %}; "
                     "\"—\" if a kit doesn't use it.", "2, 2, —", "Each part (p.…)"),
@@ -118,7 +123,8 @@ PART_FIELDS: list[Field] = [
 
 FOOTNOTE_FIELDS: list[Field] = [
     Field("marker", "The footnote marker.", "*1", "Each footnote (f.…)"),
-    Field("name", "Part name.", "Broken gap", "Each footnote (f.…)"),
+    Field("name", "Part name (Display name if set, otherwise the file name).", "Broken gap",
+          "Each footnote (f.…)"),
     Field("reason", "Why it couldn't be measured.", "The outline has a gap…", "Each footnote (f.…)"),
 ]
 
@@ -279,13 +285,15 @@ def read_table_geometry(template_path) -> TableGeometry:
     return TableGeometry(content, before, kit, after, name_index)
 
 
-def _find_parts_table(doc):
+def _find_parts_table(doc, alt_text: str = PARTS_TABLE_ALT_TEXT):
+    """The table (w:tbl element wrapper) with this Alt Text, including tables inside table cells."""
     from docx.oxml.ns import qn
-    for tbl in doc.tables:
-        pr = tbl._tbl.tblPr
+    from docx.table import Table
+    for tbl in doc.element.body.iter(qn("w:tbl")):
+        pr = tbl.find(qn("w:tblPr"))
         desc = pr.find(qn("w:tblDescription")) if pr is not None else None
-        if desc is not None and desc.get(qn("w:val")) == PARTS_TABLE_ALT_TEXT:
-            return tbl
+        if desc is not None and desc.get(qn("w:val")) == alt_text:
+            return Table(tbl, doc)
     return None
 
 
@@ -362,16 +370,24 @@ def _g(v, decimals=2) -> str:
     return "—" if v is None else f"{v:,.{decimals}f}"
 
 
-def _dims(line: dict) -> str:
+DIMENSION_UNITS = {"in": "Inches", "mm": "Millimeters", "file": "Each file's own units"}
+MM_PER = {"in": 25.4, "mm": 1.0}
+
+
+def _dims(line: dict, show: str = "in") -> str:
+    """Bounding box size under the picture. show: "in" / "mm" (convert), or "file" (as the file is)."""
     bb = (line.get("picture") or {}).get("bbox")
     if not bb:
         return ""
-    unit = {"in": " in", "mm": " mm"}.get(line.get("unit"), "")
-    fmt = "{:.3f}" if unit == " in" else "{:.1f}"
-    return f"{fmt.format(bb[0])} × {fmt.format(bb[1])}{unit}"
+    unit = line.get("unit")
+    if unit not in MM_PER:  # unknown units: can't convert, show the file's numbers
+        return f"{bb[0]:.3f} × {bb[1]:.3f}"
+    target = unit if show not in MM_PER else show
+    w, h = (v * MM_PER[unit] / MM_PER[target] for v in bb)
+    return f"{w:.3f} × {h:.3f} in" if target == "in" else f"{w:.1f} × {h:.1f} mm"
 
 
-def build_context(record: dict, plan: dict, picture=lambda line: "", logo="") -> dict:
+def build_context(record: dict, plan: dict, picture=lambda line: "", logo="", dim_units: str = "in") -> dict:
     """Template fields from a record. `picture(line)` / `logo` supply images (docxtpl
     InlineImage objects when rendering; plain strings in tests)."""
     cust, res, cal = record["customer"], record["results"], record["calibration"]
@@ -386,11 +402,12 @@ def build_context(record: dict, plan: dict, picture=lambda line: "", logo="") ->
         for k, c in enumerate(counts):
             kit_totals[k] += c or 0
         marker = ""
+        shown = (line.get("display_name") or "").strip() or part_name(line["name"])
         if line.get("skipped"):
-            footnotes.append({"marker": f"*{len(footnotes) + 1}", "name": part_name(line["name"]),
-                              "reason": line.get("reason", "")})
+            footnotes.append({"marker": f"*{len(footnotes) + 1}", "name": shown, "reason": line.get("reason", "")})
             marker = f" *{len(footnotes)}"
-        parts.append({"picture": picture(line), "dimensions": _dims(line), "name": part_name(line["name"]),
+        parts.append({"picture": picture(line), "dimensions": _dims(line, dim_units),
+                      "display_name": shown, "name": part_name(line["name"]),
                       "marker": marker, "counts": ["—" if c is None else str(c) for c in counts],
                       "total_count": str(line.get("total_count", "")),
                       "weight_per_piece": _g(line.get("weight_per_piece_g")),
@@ -450,7 +467,7 @@ def build_context(record: dict, plan: dict, picture=lambda line: "", logo="") ->
 
 # ============================================================================ render
 
-def render_docx(record: dict, template_path, out_path, work_dir) -> dict:
+def render_docx(record: dict, template_path, out_path, work_dir, dim_units: str = "in") -> dict:
     """Fill the template from the record and save it. Returns the kit-column plan."""
     from docx.shared import Inches
     from docxtpl import DocxTemplate, InlineImage, Listing
@@ -484,7 +501,7 @@ def render_docx(record: dict, template_path, out_path, work_dir) -> dict:
         except Exception:
             logo = ""  # an unreadable logo is simply left out
 
-    ctx = build_context(record, plan, picture, logo)
+    ctx = build_context(record, plan, picture, logo, dim_units)
     # Listing keeps line breaks; empty values stay "" so {%p if … %} hides them.
     ctx["customer_address"] = Listing(ctx["customer_address"]) if ctx["customer_address"] else ""
     ctx["note_to_customer"] = Listing(ctx["note_to_customer"]) if ctx["note_to_customer"] else ""
@@ -531,8 +548,6 @@ def _apply_column_widths(docx_path, geo: TableGeometry, plan: dict) -> None:
     if not geo.found:
         return
     from docx import Document
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
     doc = Document(str(docx_path))
     tbl = _find_parts_table(doc)
     if tbl is None:
@@ -541,33 +556,91 @@ def _apply_column_widths(docx_path, geo: TableGeometry, plan: dict) -> None:
     before = list(geo.before)
     before[geo.name_index] = max(0.8, plan["name_width"])
     widths = before + [plan["kit_width"]] * n + list(geo.after)
-    grid = tbl._tbl.tblGrid
-    cols = grid.findall(qn("w:gridCol"))
-    if len(cols) != len(widths):
-        return  # the table was restructured; leave docxtpl's layout alone
     twips = [round(w * 1440) for w in widths]
+    _full_width_rows(tbl._tbl, len(twips))
+    tables = [tbl]
+    totals = _find_parts_table(doc, TOTALS_TABLE_ALT_TEXT)
+    if totals is not None:
+        _move_last_part_row(tbl._tbl, totals._tbl, len(twips))
+        tables.append(totals)
+    for t in tables:
+        _set_widths(t._tbl, twips)
+    doc.save(str(docx_path))
+
+
+def _full_width_rows(tbl, ncols: int) -> None:
+    """A row with a single cell spanning the whole table (the starter template's totals
+    and sign-off row) keeps the template's span, but the column count changes with the
+    number of kits: make it span every column, and drop grid columns only it needed."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    for tr in tbl.findall(qn("w:tr")):
+        cells = tr.findall(qn("w:tc"))
+        span = cells[0].find(f"{qn('w:tcPr')}/{qn('w:gridSpan')}") if len(cells) == 1 else None
+        if span is not None and int(span.get(qn("w:val"), "1")) > 1:
+            span.set(qn("w:val"), str(ncols))
+    grid = tbl.find(qn("w:tblGrid"))
+    cols = grid.findall(qn("w:gridCol"))
+    widest = max((sum(int(tc.find(f"{qn('w:tcPr')}/{qn('w:gridSpan')}").get(qn("w:val")))
+                      if tc.find(f"{qn('w:tcPr')}/{qn('w:gridSpan')}") is not None else 1
+                      for tc in tr.findall(qn("w:tc"))) for tr in tbl.findall(qn("w:tr"))), default=0)
+    if widest == ncols:
+        for col in cols[ncols:]:
+            grid.remove(col)
+        for _ in range(ncols - len(cols)):
+            grid.append(OxmlElement("w:gridCol"))
+
+
+def _move_last_part_row(parts, totals, ncols: int) -> None:
+    """Move the last part row into the totals table (which sits in the parts table's
+    unsplittable last row), so at least one part always goes to the next page with
+    the totals and sign-off instead of them starting a page alone."""
+    from docx.oxml.ns import qn
+    end_row = next((tr for tr in parts.findall(qn("w:tr")) if totals in tr.iter(qn("w:tbl"))), None)
+    prev = end_row.getprevious() if end_row is not None else None
+    first = totals.find(qn("w:tr"))
+    if (prev is None or prev.tag != qn("w:tr") or first is None or len(prev.findall(qn("w:tc"))) != ncols
+            or prev.find(f"{qn('w:trPr')}/{qn('w:tblHeader')}") is not None):
+        return
+    first.addprevious(prev)
+
+
+def _set_widths(tbl, twips: list[int]) -> None:
+    """Grid, cell, and table widths for one table (skipped if it has a different number of columns)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    grid = tbl.find(qn("w:tblGrid"))
+    cols = grid.findall(qn("w:gridCol"))
+    if len(cols) != len(twips):
+        return  # the table was restructured; leave docxtpl's layout alone
     for col, w in zip(cols, twips):
         col.set(qn("w:w"), str(w))
-    for tr in tbl._tbl.findall(qn("w:tr")):
+    for tr in tbl.findall(qn("w:tr")):
         cells = tr.findall(qn("w:tc"))
-        if len(cells) != len(twips):
+        if len(cells) == len(twips):
+            ws = twips
+        elif len(cells) == 1:
+            ws = [sum(twips)]  # a full-width row
+        else:
             continue
-        for tc, w in zip(cells, twips):
-            pr = tc.get_or_add_tcPr()
+        for tc, w in zip(cells, ws):
+            pr = tc.find(qn("w:tcPr"))
+            if pr is None:
+                pr = OxmlElement("w:tcPr")
+                tc.insert(0, pr)
             tcw = pr.find(qn("w:tcW"))
             if tcw is None:
                 tcw = OxmlElement("w:tcW")
                 pr.insert(0, tcw)
             tcw.set(qn("w:w"), str(w))
             tcw.set(qn("w:type"), "dxa")
-    pr = tbl._tbl.tblPr
+    pr = tbl.find(qn("w:tblPr"))
     tblw = pr.find(qn("w:tblW"))
     if tblw is None:
         tblw = OxmlElement("w:tblW")
         pr.append(tblw)
     tblw.set(qn("w:w"), str(sum(twips)))
     tblw.set(qn("w:type"), "dxa")
-    doc.save(str(docx_path))
 
 
 # ============================================================================ validation

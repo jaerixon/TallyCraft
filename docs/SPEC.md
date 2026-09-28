@@ -29,6 +29,7 @@ figure is shown.**
 | Presets / settings | Plain JSON files |
 | Packing lists | `docxtpl` fills an editable Word template (`.docx`); part pictures drawn with Pillow |
 | PDF conversion | LibreOffice (headless) or Microsoft Word (COM via `pywin32`), chosen in Settings |
+| Etsy import (v0.5) | Etsy Open API v3 over `urllib` (standard library), OAuth 2.0 + PKCE; tokens encrypted with Windows DPAPI (`pywin32`) |
 | Packaging | PyInstaller `--onefile`, custom icon |
 | Icon | Generated with Pillow (tally marks `\|\|\|\|` + slash beside an outlined crate) → `.ico` |
 
@@ -44,6 +45,7 @@ TallyCraft/
   templates/           packing_list_template.docx (the user's, editable in Word)
     _default/          the app's pristine copy (refreshed by the app, never the user's)
   settings.json        app-level settings
+  etsy_connection.json Etsy keys + login tokens, encrypted (only after connecting; §12)
   README.txt           plain-language guide
 ```
 
@@ -66,7 +68,10 @@ Missing folders / settings file are created on startup.
   "default_note": "Thank you for your order!",
   "cut_colors": ["ACI 7", "RGB 0,0,0"],
   "template_path": "templates/packing_list_template.docx",
-  "pdf_engine": "auto"
+  "pdf_engine": "auto",
+  "dimension_units": "in",
+  "etsy_callback_url": "http://localhost:3003/oauth/redirect",
+  "etsy_mappings": {"tunnel pack": "XL Tunnel + Ramp"}
 }
 ```
 
@@ -93,6 +98,14 @@ Missing folders / settings file are created on startup.
   inside the TallyCraft folder.
 - `pdf_engine` (v0.4) — "Make PDFs with": `"auto"` (LibreOffice if installed,
   else Word), `"word"`, or `"libreoffice"`. Anything else falls back to `"auto"`.
+- `dimension_units` (v0.5) — "Show dimensions in": sizes in the pieces table
+  (Bounding Box, Area), the preview, and under each packing-list picture:
+  `"in"` (default), `"mm"`, or `"file"` (each file's own units). Anything else
+  falls back to `"in"`.
+- `etsy_callback_url` (v0.5) — must match the callback URL registered for the
+  Etsy app exactly (§12). `etsy_mappings` (v0.5) — remembered choices for Etsy
+  items that matched no preset: lower-case variation text → preset name (`""` =
+  skip). **No Etsy keys or tokens are ever in settings.json.**
 - `default_control_preset` can name either kind of calibration preset (the
   key name is kept for compatibility).
 - Unknown keys are preserved; a corrupt settings file is reported, backed up
@@ -175,9 +188,10 @@ remembered (`main_split`).
    |---|---|
    | Count | Editable integer ≥ 1, default 1. Multiplier only; never affects area. |
    | File Name | Base name; full path in tooltip/details. |
-   | Units | Editable dropdown: Inches / Millimeters / Unknown. Initially from `$INSUNITS`. |
-   | Bounding Box (W × H) | In the row's current unit. |
-   | Area | Net area in in² or mm² per the row's unit. |
+   | Display name (v0.5) | Optional name for packing lists (double-click to edit; blank = the file name). Saved in package presets; changing it marks the package as having unsaved changes. |
+   | File units (was "Units") | Editable dropdown: Inches / Millimeters / Unknown. Initially from `$INSUNITS`. **What the numbers in the file are** — a correction, not a display choice. Tooltip on the heading and cells: "What unit the numbers in this DXF file are in. Change this only if the file is wrong. It relabels the numbers without converting them." |
+   | Bounding Box (W × H) | Converted to the "Show dimensions in" unit (default inches; v0.5). "Each file's own units" shows the File units. Unknown File units: plain numbers. |
+   | Area | Net area in in² or mm², converted the same way. |
    | Date Modified | File's OS mtime, `YYYY-MM-DD HH:MM`. |
    | Status | OK / Info / Warning / Error. Hover tooltip + a details pane below the table showing all messages for the selected row. |
 
@@ -205,8 +219,8 @@ remembered (`main_split`).
      junctions get red ring markers. A small legend lists what is shown.
    - If the piece has no valid area (any geometry Error), loops are drawn
      as outlines only, with no fill, so nothing looks "measured" **[decision]**.
-   - Bounding-box dimensions (in the row's current unit, or "units unknown")
-     under the drawing.
+   - Bounding-box dimensions (in the "Show dimensions in" unit, or "units
+     unknown") under the drawing.
    - Rows with no geometry at all (missing/corrupt/empty file) show
      "No preview available" plus the reason.
    - Redraws on resize (including either divider) and whenever the row
@@ -418,8 +432,22 @@ The tolerance was **not** loosened.
 - **Unknown units = Error** (that row is skipped by Calculate until the
   user picks a unit). This message is not shown for files with no readable
   geometry: there the parser's own error is the real reason.
-- Changing a row's Units reinterprets the raw numbers in the new unit;
-  bounding box and area are re-derived from the raw data.
+- Changing a row's **File units** reinterprets the raw numbers in the new unit;
+  bounding box and area are re-derived from the raw data. Display is separate:
+  the pieces table and preview convert sizes to the "Show dimensions in" unit
+  (v0.5), so a LightBurn file shows 14.500 × 14.250 in while its File units stay
+  Millimeters. (Before v0.5 the table showed the file's own numbers, so the
+  dropdown looked like a display switch.)
+- **Size sanity check (v0.5):** when the File units differ from what the file
+  says (or TallyCraft assumed) and the longest side comes out over 100 in or
+  under 0.05 in, the row gets a **Warning**: "At this unit the piece would be
+  <W × H in> (<W × H mm>). Is that right?" Files left at their own units are
+  never questioned.
+- The `focus_get()` crash (v0.5 fix): while the File units dropdown list is
+  open it has keyboard focus; its Tk path (`<combobox>.popdown.f.l`) isn't a
+  tkinter widget, so `focus_get()` raised `KeyError: 'popdown'` in the editor's
+  focus check. `gui.focused_path()` reads Tk's focus path directly instead;
+  it's the app's only focus lookup.
 
 ## 6. Presets
 
@@ -446,7 +474,12 @@ The tolerance was **not** loosened.
 - **Format unchanged** by orders (v0.3): all existing package presets load as
   they are. Adding one to an order creates a package whose baseline is the
   preset's pieces list.
-- **Naming:** use the exact Etsy listing variation name.
+- **Naming:** use the exact Etsy listing variation name (Import from Etsy
+  matches on it, §12).
+- `display_name` (v0.5, optional per piece) — the packing-list name. Written
+  only when set, so older presets (without it) load unchanged and don't show
+  "unsaved changes". If the same file has different display names in two
+  packages of an order, the first is used and the results row gets a warning.
 
 ### 6.3 Order (`order_presets/<safe name>.json`)
 
@@ -612,6 +645,14 @@ List…** (Results bar, and File menu).
 - Dialog: **Customer name** (required), shipping address (multi-line), Etsy
   order number, order date (defaults to today; YYYY-MM-DD), note to customer
   (pre-filled from `default_note`); a live line shows the file name.
+  - **Enter in the address or note box adds a new line** (v0.5; bound on the
+    Text widget and stopped there, so nothing else can act on it). A hint
+    under the label says so. v0.4 lost address lines after the first in one
+    real record; that couldn't be reproduced, so as a guard a one-line address
+    with no comma asks "Is that the complete address?" before saving.
+  - After **Import from Etsy** (§12) the dialog opens pre-filled with the
+    buyer's name, formatted address, order number and order date (all still
+    editable). The pre-fill belongs to the imported order only.
 - Output in `packing_lists/`: `<date> - <customer> - <order #>` `.json` (the
   record), `.docx` (the filled-in template), `.pdf`. Never overwritten
   (" (2)", " (3)", … — checked across all three extensions).
@@ -632,13 +673,16 @@ List…** (Results bar, and File menu).
   logo + shop name, "PACKING LIST" + date, boxed Ship-to / order # / order
   date block, items ordered, a prominent total weight box, the unmeasured
   warning, the kit legend, the parts table, footnotes, "Packed by / Date",
-  the note in a box, and the small-print shop record. Calibri throughout;
+  the note in a box, and the small-print shop record. Part names use
+  `{{ p.display_name }}` (v0.5). Calibri throughout;
   sizes 18 (title) / 16 (shop) / 20 (total) / 12 (name) / 10 body / 9 table /
   7–8 labels; US Letter portrait, 0.5 in margins.
 - **Parts table:** one row per part via `{%tr for p in parts %}`; kit columns
   via `{%tc for h in kit_headers %}` (each `{%tc %}`/`{%tr %}` tag sits in its
-  own cell/row, which docxtpl removes). Header row repeats on each page
-  (`w:tblHeader`), rows don't split (`w:cantSplit`), footer shows the order
+  own cell/row, which docxtpl removes). The two narrow `{%tc %}` tag columns
+  use 1 pt text and no cell margins so they stay slivers in the template.
+  Header row repeats on each page (`w:tblHeader`), rows don't split
+  (`w:cantSplit`), footer shows the order
   reference and "Page X of Y" (Word PAGE/NUMPAGES fields; the Footer style's
   built-in tabs are cleared so the right tab wins).
 - **Column widths:** docxtpl's column loop makes every column equal, so after
@@ -646,14 +690,31 @@ List…** (Results bar, and File menu).
   table"**, restores the template's widths for the fixed columns, and shares
   the remaining page width among kit columns. Without the Alt Text it leaves
   docxtpl's layout.
+- **Sign-off stays with the table (v0.5):** the table's last row is one
+  full-width, unsplittable cell holding the totals (a one-row table with Alt
+  Text **"TallyCraft totals row"**, same columns), footnotes, "Packed by /
+  Date", the note (a one-cell bordered table: Word hides paragraph side borders
+  in a cell) and the shop record. After filling, TallyCraft sets that cell's
+  span to the real column count, gives the totals table the same widths, and
+  **moves the last part row into it**, so at least one part always goes to the
+  next page with the totals and sign-off. (Keep-with-next doesn't work here:
+  LibreOffice only supports it for a whole table and then moves the table to
+  a new page; tried and rejected.) Edited templates without these Alt Texts
+  keep their own layout.
 - **Kit columns** use the template's real widths: full names if every
   heading fits (≤ 3 lines, column ≥ 0.55 in); else "Kit 1…" + a legend; else
   one column per package ("XL Standard Box (each of 15)"); else only Total
   count with a note. Never wider than the page.
 - **Pictures:** PNG at **400 DPI** at printed size (the Picture column width
-  − padding × 0.72 in), drawn 3× oversampled then downscaled: cut outline
-  solid black, holes thinner, **engrave light grey and thinnest**, unclosed
-  runs dashed. Bounding-box size in small text under each picture.
+  − padding × **0.5 in**; 0.72 in before v0.5), drawn 3× oversampled then
+  downscaled: cut outline solid black, holes thinner, **engrave light grey and
+  thinnest**, unclosed runs dashed. Small parts (pins) are scaled to fit their
+  box, so they stay recognizable. Bounding-box size in small text under each
+  picture, in the "Show dimensions in" unit (inches to 3 decimals, mm to 1;
+  files with unknown units show plain numbers).
+- **Rows per page (starter template, US Letter):** 8 on page 1 (below the
+  header, customer and total blocks), 13 on following pages; checked with both
+  LibreOffice and Word.
 - **Word-validity repair:** after filling, any table cell left with no
   paragraph (e.g. a cell whose `{%p if %}` blocks were all removed) gets an
   empty paragraph — Word otherwise calls the whole file "corrupted". The
@@ -727,12 +788,13 @@ reads "Total (measured parts)".
                  "quantity", "weight_g", "area_cm2", "from_preset",
                  "grams_per_cm2", "preset_name"},
  "results": {"kit_labels": [...], "total_g", "grams_per_cm2", "skipped_count",
-             "lines": [{"name", "path", "unit", "kit_counts", "total_count",
+             "lines": [{"name", "display_name", "path", "unit", "kit_counts", "total_count",
                         "weight_per_piece_g", "item_total_g", "skipped", "reason",
                         "picture": {"loops", "depths", "open", "engrave", "bbox"}}]}}
 ```
 
-`engrave` was added in v0.4 (older records without it still load). The logo
+`engrave` was added in v0.4 and `display_name` in v0.5 (older records without
+them still load). The logo
 is embedded so a re-print doesn't depend on the image file.
 `packing.validate_record` rejects a wrong type/version, missing sections, or a
 missing customer name.
@@ -751,8 +813,12 @@ original PDF is never replaced.
 Shop name, logo (checked PNG/JPG), default note; Word template (Browse,
 **Restore default template**, **Template Help**); **Make PDFs with**
 (Automatic / Word / LibreOffice, showing whether LibreOffice was found);
+**Show dimensions in** (Inches / Millimeters / Each file's own units);
 **Cut colors** (one per line, validated). Changing cut colors offers to
 re-read every piece in the order (counts and Units choices kept).
+**Etsy** (v0.5, §12): API keystring, shared secret (masked; blank keeps the
+saved one), callback URL, Connect/Disconnect, the connected shop's name, and
+"Forget N remembered matches".
 
 ## 10. Hidden self-test modes
 
@@ -767,6 +833,8 @@ blocking error dialog).
   and that `templates/` is in the app folder.
 - `TallyCraft.exe --selftest-pdf <out.pdf> <file.dxf>...` — the same, then
   convert with Word (local check only).
+- `TallyCraft.exe --selftest-etsy <out.json>` (v0.5) — offline check that the
+  exe bundles HTTPS (ssl) and DPAPI encryption for the Etsy connection file.
 
 ## 11. Repository & distribution
 
@@ -800,3 +868,78 @@ tests/               pytest
   exception is `tests/test_real_conversion.py`, skipped unless
   `TALLYCRAFT_REAL_CONVERSION=1`, which also checks no Word/LibreOffice
   process is left running.
+- **Tests never call Etsy**; every API call goes through a fake transport. The
+  one exception is `tests/test_etsy_live.py`, skipped unless
+  `TALLYCRAFT_ETSY_LIVE=1` (with `TALLYCRAFT_ETSY_DIR` = the TallyCraft folder
+  that was connected); it only lists open orders.
+
+## 12. Etsy import (v0.5)
+
+Read-only import of an open Etsy order into TallyCraft. Code: `etsy.py`
+(OAuth, API, parsing, matching; no Tk) and `etsy_ui.py` (Settings section and
+dialogs). Checked against Etsy's Open API v3 docs and OpenAPI spec in
+September 2026.
+
+### 12.1 Connecting (Settings > Etsy)
+
+- The user types the **API keystring** and **shared secret** from
+  etsy.com/developers > Your Apps. They are stored only in
+  `etsy_connection.json` next to settings.json, **encrypted for the Windows
+  user with DPAPI** (plain base64 only if DPAPI is unavailable), never in
+  settings.json, the repo, tests, logs, or messages. Every message built from
+  an Etsy reply is scrubbed of the keys and tokens; unexpected exceptions show
+  only their type name. The file is git-ignored everywhere.
+- **Connect**: OAuth 2.0 authorization code with **PKCE (S256)**. TallyCraft
+  opens `https://www.etsy.com/oauth/connect` in the browser with
+  `scope=transactions_r shops_r` (**read-only**: receipts including shipping
+  addresses, and the shop), a random `state`, and the callback URL. A local
+  listener (`http.server`, bound before the browser opens) waits on the
+  callback URL's host/port/path for up to 5 minutes; a small window says what
+  to do and has Cancel. The reply's `state` must match. The code is traded at
+  `https://api.etsy.com/v3/public/oauth/token`, then `GET /users/me` gives
+  the shop id and `GET /shops/{id}` its name, shown as "Connected to …".
+- **Callback URL:** must match the app's registered callback exactly (Etsy
+  compares case-sensitively). Only `http://localhost:PORT/path` or
+  `http://127.0.0.1:PORT/path` can be caught locally; Etsy's own quick-start
+  uses `http://localhost:3003/oauth/redirect` (the default). Anything else is
+  a plain setup error.
+- Every request sends `x-api-key: keystring:shared_secret`; API calls also
+  send `Authorization: Bearer <access token>`.
+- **Tokens:** access 1 hour, refresh 90 days. Renewed automatically 2 minutes
+  before expiry, and once more if Etsy answers 401. A refused refresh forgets
+  the tokens (keys kept) and says "Your Etsy login has expired… Connect again".
+- **Disconnect** forgets the tokens and keeps the keys. New keys drop the old
+  connection.
+
+### 12.2 Import from Etsy… (Order section)
+
+- Not connected → offers to open Settings. Otherwise
+  `GET /shops/{id}/receipts?was_paid=true&was_shipped=false&was_canceled=false&limit=50&sort_on=created&sort_order=desc`
+  runs on a background thread (the window stays responsive).
+- The order list shows order # (receipt id), buyer (recipient name), order
+  date, and items with variations and quantity ("2× Model: XL Standard Box");
+  the newest 50 if there are more. Selecting one shows each item's match and
+  any personalization.
+- **Matching:** each item's variation values are compared with package preset
+  names, case-insensitive; the listing title is tried last. A remembered
+  choice (`etsy_mappings`, keyed by the item's variation values, or its title
+  if it has none) wins. Personalization "variations" are shown, never matched.
+- **Unmatched items** are listed in a dialog: pick a package preset or "Skip
+  this item" for each (required), with a **Remember** checkbox (on by
+  default). Cancel leaves the current order untouched.
+- The import **replaces the current order** (asks first unless it's the
+  startup blank package): one package per preset, quantities summed, loaded
+  exactly like Add Package from Preset. Missing/changed files show in the
+  Status column as usual; a preset that can't be loaded is reported and left
+  out.
+- The customer details (name, formatted shipping address without the name
+  line, order #, order date) pre-fill Create Packing List for this order.
+  **Calibration stays manual.**
+
+### 12.3 Errors
+
+Plain language, never a crash, manual entry keeps working:
+no internet ("couldn't reach Etsy…"), expired login ("…Connect again", offers
+Settings), Etsy down (5xx: "isn't responding properly… try again in a few
+minutes"), rate limit (429: "limiting how often… Try again in N seconds"),
+permission (403), other errors with Etsy's (scrubbed) reason.

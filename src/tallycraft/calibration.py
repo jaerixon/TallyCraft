@@ -89,7 +89,7 @@ def validate_reference(row: PieceRow | None, quantity: str, weight: str,
     if row is not None:
         if row.status == Level.ERROR or row.area_cm2 is None:
             if row.unit not in ("in", "mm") and row.parsed.bbox_raw is not None:
-                why = "its units are Unknown — choose Inches or Millimeters in the Units column"
+                why = "its units are Unknown — choose Inches or Millimeters in the File units column"
             else:
                 why = next((m.text for m in row.messages if m.level == Level.ERROR), "its area couldn't be measured")
             errors.insert(0, f"The reference piece {row.name} can't be used because its area can't be "

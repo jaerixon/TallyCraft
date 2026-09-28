@@ -169,3 +169,53 @@ def test_settings_defaults_and_corrupt_backup(tmp_path):
     assert warn and "settings.json.bak" in warn
     assert settings["default_control_preset"] is None
     assert (tmp_path / "settings.json.bak").exists()
+
+
+# ---------------------------------------------------------------- File units vs "Show dimensions in" (v0.5)
+
+def test_sizes_shown_in_the_display_unit(dxf):
+    doc, msp = dxf.new(insunits=4)  # the file says mm
+    dxf.rect_lines(msp, 0, 0, 368.3, 361.95)
+    row = PieceRow.load(dxf.save(doc))
+    assert row.bbox_text("in") == "14.500 × 14.250 in"  # converted for display
+    assert row.bbox_text("mm") == "368.3 × 361.9 mm"  # 361.95 is stored as 361.9499…
+    assert row.bbox_text("file") == row.bbox_text() == "368.300 × 361.950 mm"  # the file's own numbers
+    assert row.area_text("in") == f"{368.3 * 361.95 / 25.4 ** 2:.3f} in²"
+    assert row.area_text("mm") == row.area_text("file") == "133,306.18 mm²"
+    assert row.unit == "mm"  # displaying never changes the File units
+
+
+def test_unknown_file_units_show_plain_numbers(dxf):
+    doc, msp = dxf.new(insunits=0)
+    dxf.rect_lines(msp, 0, 0, 4, 2)
+    row = PieceRow.load(dxf.save(doc))
+    assert row.bbox_text("in") == "4.000 × 2.000" and row.area_text("mm") == "8.000"
+
+
+@pytest.mark.parametrize("insunits, size, new_unit, warn", [
+    (4, 368.3, "in", True),   # a 14.5 in part (mm file) relabelled as inches: 368 in long
+    (1, 2.0, "mm", False),    # 2 in relabelled as mm: 2 mm = 0.079 in, still plausible
+    (1, 1.0, "mm", True),     # 1 in relabelled as mm: 1 mm = 0.039 in, below 0.05 in
+    (4, 50.0, "in", False),   # 50 mm relabelled as inches: 50 in, plausible
+])
+def test_implausible_file_units_warn(dxf, insunits, size, new_unit, warn):
+    doc, msp = dxf.new(insunits=insunits)
+    dxf.rect_lines(msp, 0, 0, size, size / 2)
+    row = PieceRow.load(dxf.save(doc))
+    assert row.status == Level.OK
+    row.unit = new_unit
+    longest_in = size * (2.54 if new_unit == "in" else 0.1) / 2.54
+    expect = not 0.05 <= longest_in <= 100
+    texts = [m.text for m in row.messages if m.level == Level.WARNING]
+    assert bool(texts) == expect
+    if expect:
+        assert texts[0].startswith("At this unit the piece would be ") and texts[0].endswith("Is that right?")
+        assert " in (" in texts[0] and " mm)" in texts[0]
+        assert row.status == Level.WARNING
+
+
+def test_no_size_warning_unless_the_file_units_were_changed(dxf):
+    doc, msp = dxf.new(insunits=1)
+    dxf.rect_lines(msp, 0, 0, 500, 10)  # a 500 in file as the file says: not our guess to question
+    row = PieceRow.load(dxf.save(doc))
+    assert not any(m.level == Level.WARNING for m in row.messages)

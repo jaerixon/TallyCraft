@@ -107,6 +107,7 @@ def main() -> None:
         "--add-data", f"{ICON}{sep}assets",
         "--add-data", f"{TEMPLATE}{sep}assets/templates",
         "--paths", str(ROOT / "src"),
+        "--hidden-import", "win32crypt",  # Etsy connection file encryption (imported lazily)
         "--distpath", str(DIST / "_exe"),
         "--workpath", str(BUILD),
         "--specpath", str(BUILD),

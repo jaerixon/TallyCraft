@@ -33,6 +33,9 @@ WHAT'S IN THIS FOLDER
   templates\         the Word template packing lists are made from (edit it!)
   settings.json      app settings, including which plywood batch to load
                      automatically at startup
+  etsy_connection.json  only after you connect to Etsy: your Etsy keys and
+                     login, scrambled so only your Windows account can read
+                     them. Don't share this file.
   README.txt         this file
 
 Keep this folder somewhere you can save files to, such as Documents or the
@@ -52,9 +55,9 @@ PACKAGES AND ORDERS
   quantity. A normal sale is simply an order with one package.
 
   NAME YOUR PACKAGE PRESETS EXACTLY LIKE YOUR ETSY LISTING VARIATIONS,
-  for example "XL Standard Box" or "Mini Tunnel + Ramp" (same spelling,
-  capitals, and symbols). A future version will be able to match Etsy
-  orders to your presets by name.
+  for example "XL Standard Box" or "Mini Tunnel + Ramp" (same spelling and
+  symbols; capitals don't matter). "Import from Etsy" matches orders to your
+  presets by these names (see IMPORTING ORDERS FROM ETSY below).
 
 
 THE SCREEN
@@ -75,6 +78,8 @@ ORDER (very top): the packages in this sale
      Remove                    take the selected package out of the order.
      Save Order / Load Order   keep a whole order (including any unsaved
                                edits) and open it again later.
+     Import from Etsy          build the order from an open Etsy order and
+                               fill in the customer for the packing list.
 
    Click a package to show its pieces in section 1 below. Everything in
    section 1 (import, counts, units, preview) works on that package only.
@@ -88,13 +93,22 @@ ORDER (very top): the packages in this sale
    One row per DXF file:
      Count          how many of this piece go in one kit. Double-click to change it.
      File Name      the DXF file.
-     Units          whether the numbers in the file are Inches or Millimeters.
-                    TallyCraft reads this from the file. If the file is wrong
-                    or doesn't say, double-click to choose the right one. The
-                    size and area are then recalculated from the file's own
-                    numbers.
-     Bounding Box   the overall width x height of the piece.
-     Area           the piece's surface area, with holes and cutouts subtracted.
+     Display name   optional: the name printed on packing lists instead of
+                    the file name (for example "Front Panel"). Double-click
+                    to type it; leave it empty to use the file name. It's
+                    saved in the package preset.
+     File units     what unit the numbers IN THE DXF FILE are: Inches or
+                    Millimeters. TallyCraft reads this from the file. Change it
+                    only if the file is wrong or doesn't say (double-click).
+                    It relabels the file's numbers without converting them, so
+                    choosing the wrong one makes the piece 25 times too big or
+                    too small; if the size looks implausible, TallyCraft warns
+                    you. To SEE sizes in inches or mm, use File > Settings >
+                    "Show dimensions in" instead.
+     Bounding Box   the overall width x height of the piece, in the "Show
+                    dimensions in" unit (inches unless you change it).
+     Area           the piece's surface area, with holes and cutouts
+                    subtracted, in the same unit.
      Date Modified  when the DXF file was last changed on disk.
      Status         OK, Info, Warning, or Error (see below). Hover over it, or
                     click the row, to read the details in the box underneath.
@@ -201,14 +215,15 @@ STATUS MEANINGS
 
 BASIC WORKFLOW
 --------------
-  1. Order:      click "Add Package from Preset" and pick the product(s) sold.
+  1. Order:      click "Import from Etsy" and pick the order, or click "Add
+                 Package from Preset" and pick the product(s) sold.
                  Set each package's Quantity.
                  (New product? Use the starting blank package: click "Import
                  DXF..." and select all its piece files, hold Ctrl or Shift to
                  pick several, then "Save Package Preset" with the Etsy
                  variation name.)
   2. Review:     check the Status columns and fix any Errors. Set each piece's
-                 Count and correct its Units if needed.
+                 Count and correct its File units if the file is wrong.
   3. Calibrate:  pick the part you weighed, how many, and their total weight
                  (or use a control sample), or load a saved calibration preset.
   4. Calculate:  press Calculate and read the Package Total.
@@ -231,7 +246,10 @@ PACKING LISTS
 
   You enter the customer's name (required), shipping address, Etsy order
   number, order date (today unless you change it), and an optional note to
-  the customer. TallyCraft saves three files in the packing_lists folder,
+  the customer. In the address box, press Enter for each new line. If the
+  address is only one line, TallyCraft asks whether it's complete. After
+  "Import from Etsy", these are already filled in (you can still change
+  them). TallyCraft saves three files in the packing_lists folder,
   named like "2026-09-27 - Jordan Rivera - 3141592":
     .pdf    the packing list to print
     .docx   the same packing list as a Word document
@@ -270,8 +288,16 @@ PACKING LISTS
   original PDF stays alongside the record; re-prints are saved as
   "... (reprint <date>)".
 
-  File > Settings... sets your shop name, logo (PNG or JPG), and the note
-  that's filled in for customers by default.
+  File > Settings... sets your shop name, logo (PNG or JPG), the note
+  that's filled in for customers by default, and "Show dimensions in":
+  whether sizes are shown in Inches (default), Millimeters, or each file's
+  own units, in the pieces table, the preview, and under the part pictures
+  on packing lists. This only changes how sizes are shown, never the weight.
+
+  Long orders: the totals, "Packed by", note, and small print always stay
+  together with at least the last part, so the sign-off never ends up
+  alone on the last page. About 8 parts fit on the first page and 13 on
+  each page after it.
 
 
 CHANGING HOW THE PACKING LIST LOOKS (WORD TEMPLATE)
@@ -423,10 +449,10 @@ SHOP RECORD
       e.g. 2026-09-28 10:20
   {{ app_version }}
       TallyCraft version.
-      e.g. 0.4.0
+      e.g. 0.5.0
   {{ shop_record }}
       The whole small-print shop record in one line.
-      e.g. Calibration: … Calculated 2026-09-28 10:15. Packing list created 2026-09-28 10:20. TallyCraft 0.4.0.
+      e.g. Calibration: … Calculated 2026-09-28 10:15. Packing list created 2026-09-28 10:20. TallyCraft 0.5.0.
 
 EACH PART (P.…)
 ---------------
@@ -435,10 +461,15 @@ EACH PART (P.…)
       the Picture column.
       e.g. (image)
   {{ p.dimensions }}
-      Bounding box size.
+      Bounding box size, in the unit chosen in Settings ("Show dimensions
+      in").
       e.g. 14.500 × 14.250 in
+  {{ p.display_name }}
+      The name to show: the Display name set in the pieces table, or the
+      file name (without .dxf) if none is set.
+      e.g. Front Panel
   {{ p.name }}
-      Part name (file name without .dxf).
+      The file name without .dxf (always, even if a Display name is set).
       e.g. XL v1 - Main Box - Front Panel v2 - x3
   {{ p.marker }}
       Footnote marker for unmeasured parts (" *1"); empty otherwise.
@@ -469,13 +500,49 @@ EACH FOOTNOTE (F.…)
       The footnote marker.
       e.g. *1
   {{ f.name }}
-      Part name.
+      Part name (Display name if set, otherwise the file name).
       e.g. Broken gap
   {{ f.reason }}
       Why it couldn't be measured.
       e.g. The outline has a gap…
 
 <<TEMPLATE FIELDS END>>
+
+
+IMPORTING ORDERS FROM ETSY
+--------------------------
+  TallyCraft can read your open Etsy orders. It only READS (orders and
+  shipping addresses); it never changes anything in your shop.
+
+  One-time setup:
+    1. At etsy.com/developers > Your Apps, note your app's keystring and
+       shared secret, and its registered callback URL (for example
+       http://localhost:3003/oauth/redirect).
+    2. In TallyCraft: File > Settings... > ETSY. Type the API keystring and
+       shared secret, and the callback URL exactly as registered at Etsy.
+    3. Press Connect. Your browser opens Etsy: sign in if asked and press
+       "Allow Access". Etsy sends you back and Settings shows "Connected to
+       <your shop>". TallyCraft renews the login by itself; if it ever
+       expires, press Connect again.
+  Your keys and login are kept only in etsy_connection.json in this folder,
+  scrambled so only your Windows account can read them. Disconnect forgets
+  the login (the keys stay, so reconnecting is one click).
+
+  Each order:
+    1. Click "Import from Etsy..." (Order section). You see the paid orders
+       that aren't marked shipped yet: order number, buyer, date, and items
+       with their variation (like "Model: XL Standard Box") and quantity.
+    2. Pick one and press Import. Each variation is matched to the package
+       preset with the same name (capitals don't matter), with its quantity.
+       Items that don't match are listed: choose a preset or "Skip this
+       item". Tick Remember to have it chosen automatically next time
+       (Settings > Etsy can forget remembered matches).
+    3. Check the calibration, press Calculate, then Create Packing List. The
+       customer's name, address, order number and date are filled in.
+
+  If there's no internet, Etsy is down, you've asked too often (rate limit),
+  or the login expired, TallyCraft says so in plain words. You can always
+  build the order and type the customer by hand instead.
 
 
 COLORS: CUT vs ENGRAVE (and LightBurn files)

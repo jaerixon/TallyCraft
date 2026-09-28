@@ -236,3 +236,63 @@ def test_existing_package_presets_load_unchanged(tmp_path):
            "pieces": [{"path": "C:/a.dxf", "units": "in", "count": 2, "mtime": 1790000000.0}]}
     (s.package_dir / "XL Standard Box.json").write_text(json.dumps(v01), encoding="utf-8")
     assert s.load_package("XL Standard Box") == {"name": "XL Standard Box", "pieces": v01["pieces"]}
+
+
+# ---------------------------------------------------------------- display names (v0.5)
+
+def test_display_name_saved_in_presets_and_old_presets_still_load(tmp_path, files):
+    s = Storage(tmp_path)
+    s.ensure_folders()
+    pkg = Package("Box")
+    a = add(pkg, PieceRow.load(files["side"], count=2))
+    add(pkg, PieceRow.load(files["floor"]))
+    pkg.rows[a].display_name = "Side Panel"
+    spec = pkg.pieces_spec()
+    assert spec[0]["display_name"] == "Side Panel" and "display_name" not in spec[1]  # only when set
+    s.save_package("Box", spec)
+    loaded = s.load_package("Box")["pieces"]
+    assert loaded[0]["display_name"] == "Side Panel" and "display_name" not in loaded[1]
+    # a preset saved before v0.5 (no display names) still loads, and nothing looks changed
+    old = {"type": "tallycraft.package", "version": 1, "name": "Old", "saved_at": "2026-09-27T13:00:00",
+           "pieces": [{"path": files["side"], "units": "in", "count": 2, "mtime": 1.0}]}
+    (s.package_dir / "Old.json").write_text(json.dumps(old), encoding="utf-8")
+    pieces = s.load_package("Old")["pieces"]
+    p2 = Package("Old", preset_name="Old")
+    add(p2, PieceRow.load(pieces[0]["path"], count=pieces[0]["count"],
+                          display_name=pieces[0].get("display_name", "")))
+    p2.set_baseline(pieces)
+    assert not p2.is_dirty
+
+
+def test_bad_display_name_is_ignored(tmp_path, files):
+    s = Storage(tmp_path)
+    s.ensure_folders()
+    bad = {"type": "tallycraft.package", "version": 1, "name": "X", "saved_at": "2026-09-27T13:00:00",
+           "pieces": [{"path": files["side"], "units": "in", "count": 1, "mtime": 1.0, "display_name": 5}]}
+    (s.package_dir / "X.json").write_text(json.dumps(bad), encoding="utf-8")
+    assert "display_name" not in s.load_package("X")["pieces"][0]
+
+
+def test_display_name_edit_marks_unsaved_and_undo_clears(files):
+    pkg = Package("Box", preset_name="Box")
+    iid = add(pkg, PieceRow.load(files["side"]))
+    pkg.mark_saved("Box")
+    assert not pkg.is_dirty
+    pkg.rows[iid].display_name = "Side"
+    assert pkg.is_dirty
+    pkg.rows[iid].display_name = ""
+    assert not pkg.is_dirty
+
+
+def test_merge_uses_display_name_and_warns_on_disagreement(files):
+    a, b = Package("A"), Package("B")
+    ia = add(a, PieceRow.load(files["side"]))
+    ib = add(b, PieceRow.load(files["side"]))
+    a.rows[ia].display_name = "Side"
+    _labels, merged = merge_order(Order([a, b]))
+    assert merged[0].display_name == "Side" and merged[0].name == "side.dxf"
+    assert not any("display names" in w for w in merged[0].warnings)  # one name set, the other empty: fine
+    b.rows[ib].display_name = "Wall"
+    _labels, merged = merge_order(Order([a, b]))
+    assert merged[0].display_name == "Side"
+    assert any("Different display names" in w and "'Wall'" in w for w in merged[0].warnings)

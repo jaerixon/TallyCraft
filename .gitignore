@@ -11,6 +11,10 @@ build/
 dist/
 *.spec.bak
 
+# Etsy API keys and tokens: never commit, wherever the app wrote them
+etsy_connection.json
+etsy_connection.tmp
+
 # Local run-from-source data (presets/settings created by the app)
 portable/
 tallycraft_error.log

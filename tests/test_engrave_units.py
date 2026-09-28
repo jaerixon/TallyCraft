@@ -280,3 +280,12 @@ def test_real_lightburn_front_panel():
     assert len(p.engrave) == 151
     assert "151 engrave-only items drawn but not counted in weight." in texts(p, Level.INFO)
     assert p.status == Level.INFO
+
+
+def test_lightburn_file_shows_inches_but_keeps_mm_file_units():
+    if not LB_FILE.exists():
+        pytest.skip("private LightBurn sample not present")
+    row = PieceRow.load(str(LB_FILE))
+    assert row.unit == "mm"  # File units: what the numbers in the file are
+    assert row.bbox_text("in") == "14.500 × 14.250 in"  # Show dimensions in: Inches (default)
+    assert row.status == Level.INFO

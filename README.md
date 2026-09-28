@@ -42,8 +42,14 @@ even if the DXF files change.
 pictures but never weighed. LightBurn DXF exports (which don't state units) are read as
 millimeters.
 
-> **Tip:** name package presets exactly like your Etsy listing variations. A future Etsy
-> integration will match orders to presets by name.
+**Import orders from Etsy.** Connect your shop once (read-only), then pick an open order: TallyCraft
+builds the order by matching each listing variation (such as "Model: XL Standard Box") to the
+package preset with the same name, and fills in the customer's name, address, order number and
+date on the packing list. Items that don't match are shown so you can pick a preset or skip them,
+and TallyCraft can remember your choice.
+
+> **Tip:** name package presets exactly like your Etsy listing variations, so orders match
+> automatically.
 
 ## Download
 
@@ -62,6 +68,9 @@ TallyCraft/
   TallyCraft.exe
   package_presets/     saved kits
   control_presets/     saved plywood batches
+  order_presets/       saved orders
+  packing_lists/       packing lists (PDF + Word + record)
+  templates/           the Word template packing lists are made from
   settings.json        app settings (for example, the default plywood batch)
   README.txt           plain-language guide to every screen
 ```

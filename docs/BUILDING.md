@@ -69,10 +69,28 @@ The exe has hidden self-test modes. None opens a window; on failure they write
 dist\TallyCraft\TallyCraft.exe --selftest report.json path\to\piece.dxf      # parse DXFs
 dist\TallyCraft\TallyCraft.exe --selftest-docx check.docx path\to\piece.dxf  # fill the bundled template
 dist\TallyCraft\TallyCraft.exe --selftest-pdf check.pdf path\to\piece.dxf    # ...then convert with Word
+dist\TallyCraft\TallyCraft.exe --selftest-etsy etsy.json                       # HTTPS + key encryption bundled
 ```
 
-The release workflow runs `--selftest` and `--selftest-docx` (GitHub's runners have
-no Word) before publishing.
+The release workflow runs `--selftest`, `--selftest-docx` (GitHub's runners have no
+Word) and `--selftest-etsy` before publishing.
+
+### Etsy import
+
+Etsy calls use only the standard library (`urllib`, `http.server`); the connection
+file is encrypted with Windows DPAPI via `pywin32` (`win32crypt`, a hidden import in
+`build.py`). **Never commit Etsy keys or tokens**: they live only in
+`etsy_connection.json` in the app folder, which `.gitignore` excludes everywhere, and
+tests use made-up keys. Every test fakes Etsy's API. To check the real thing, connect
+in the app first (Settings > Etsy), then run the single opt-in live test, which only
+lists open orders:
+
+```powershell
+$env:TALLYCRAFT_ETSY_LIVE = "1"; $env:TALLYCRAFT_ETSY_DIR = "D:\path\to\your\TallyCraft folder"
+.venv\Scripts\python -m pytest -q -s tests\test_etsy_live.py
+```
+
+It uses (and may renew) the login saved in that folder, as the app does.
 
 ### Building only the exe
 

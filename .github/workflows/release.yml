@@ -52,6 +52,9 @@ jobs:
           $zip.Dispose()
           if (-not ($names -contains 'word/document.xml') -or -not ($names | Where-Object { $_ -like 'word/media/*' })) { throw "packing list selftest: bad .docx" }
           if (-not (Test-Path dist/TallyCraft/templates/packing_list_template.docx) -or -not (Test-Path dist/TallyCraft/templates/_default/packing_list_template.docx)) { throw "templates missing from the app folder" }
+          # Etsy import: HTTPS and the Windows encryption for the connection file are bundled (offline check).
+          $p = Start-Process dist/TallyCraft/TallyCraft.exe -ArgumentList '--selftest-etsy','etsy.json' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Etsy selftest exit $($p.ExitCode): $(Get-Content etsy.json* -Raw)" }
 
       - uses: actions/upload-artifact@v4
         with:

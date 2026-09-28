@@ -63,16 +63,17 @@ TallyCraft fills a Word template (`templates/packing_list_template.docx`) using 
 | `{{ grams_per_in2 }}` | Weight per area, g/in², 5 decimals. | 2.93200 |
 | `{{ calculated_at }}` | When Calculate was pressed. | 2026-09-28 10:15 |
 | `{{ created_at }}` | When the packing list was created. | 2026-09-28 10:20 |
-| `{{ app_version }}` | TallyCraft version. | 0.4.0 |
-| `{{ shop_record }}` | The whole small-print shop record in one line. | Calibration: … Calculated 2026-09-28 10:15. Packing list created 2026-09-28 10:20. TallyCraft 0.4.0. |
+| `{{ app_version }}` | TallyCraft version. | 0.5.0 |
+| `{{ shop_record }}` | The whole small-print shop record in one line. | Calibration: … Calculated 2026-09-28 10:15. Packing list created 2026-09-28 10:20. TallyCraft 0.5.0. |
 
 ## Each part (p.…)
 
 | Placeholder | Contains | Example |
 |---|---|---|
 | `{{ p.picture }}` | Drawing of the part (cut lines solid, engrave lines light), fitted to the Picture column. | (image) |
-| `{{ p.dimensions }}` | Bounding box size. | 14.500 × 14.250 in |
-| `{{ p.name }}` | Part name (file name without .dxf). | XL v1 - Main Box - Front Panel v2 - x3 |
+| `{{ p.dimensions }}` | Bounding box size, in the unit chosen in Settings ("Show dimensions in"). | 14.500 × 14.250 in |
+| `{{ p.display_name }}` | The name to show: the Display name set in the pieces table, or the file name (without .dxf) if none is set. | Front Panel |
+| `{{ p.name }}` | The file name without .dxf (always, even if a Display name is set). | XL v1 - Main Box - Front Panel v2 - x3 |
 | `{{ p.marker }}` | Footnote marker for unmeasured parts (" *1"); empty otherwise. |  *1 |
 | `{{ p.counts }}` | This part's count in each kit column, for {%tc for c in p.counts %} {{ c }} {%tc endfor %}; "—" if a kit doesn't use it. | 2, 2, — |
 | `{{ p.total_count }}` | Count across every kit in the order. | 4 |
@@ -86,6 +87,6 @@ TallyCraft fills a Word template (`templates/packing_list_template.docx`) using 
 | Placeholder | Contains | Example |
 |---|---|---|
 | `{{ f.marker }}` | The footnote marker. | *1 |
-| `{{ f.name }}` | Part name. | Broken gap |
+| `{{ f.name }}` | Part name (Display name if set, otherwise the file name). | Broken gap |
 | `{{ f.reason }}` | Why it couldn't be measured. | The outline has a gap… |
 

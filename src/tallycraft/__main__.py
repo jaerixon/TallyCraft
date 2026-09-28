@@ -79,6 +79,21 @@ def selftest_pdf(out_pdf: str, dxf_paths: list[str]) -> int:
     return 0
 
 
+def selftest_etsy(out_path: str, _args: list[str]) -> int:
+    """Offline check that the exe bundles what Etsy import needs: HTTPS (ssl) and the
+    Windows encryption for the connection file. No network, no real keys."""
+    import json
+    import ssl
+
+    from tallycraft.etsy import _protect, _unprotect
+    ssl.create_default_context()
+    scheme, text = _protect(b"selftest")
+    ok = _unprotect(scheme, text) == b"selftest"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump({"ssl": ssl.OPENSSL_VERSION, "protection": scheme, "round_trip": ok}, f)
+    return 0 if ok and scheme == "dpapi" else 4
+
+
 def _run_selftest(func, out: str, args: list[str]) -> int:
     """The packaged exe has no console, so failures go to "<out>.error.txt" (and exit
     code 3) instead of PyInstaller's blocking error dialog."""
@@ -98,5 +113,7 @@ if __name__ == "__main__":
         sys.exit(_run_selftest(selftest_docx, sys.argv[2], sys.argv[3:]))
     if len(sys.argv) >= 3 and sys.argv[1] == "--selftest-pdf":
         sys.exit(_run_selftest(selftest_pdf, sys.argv[2], sys.argv[3:]))
+    if len(sys.argv) >= 3 and sys.argv[1] == "--selftest-etsy":
+        sys.exit(_run_selftest(selftest_etsy, sys.argv[2], sys.argv[3:]))
     from tallycraft.gui import main
     main()

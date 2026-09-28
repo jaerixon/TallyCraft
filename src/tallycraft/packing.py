@@ -133,6 +133,7 @@ def build_record(*, customer: dict, shop: dict, packages: list[dict], calibratio
         info = pieces_info.get(item.name, {})
         lines.append({
             "name": item.name,
+            "display_name": info.get("display_name", "") or "",
             "path": info.get("path", ""),
             "unit": info.get("unit", ""),
             "kit_counts": list(item.kit_counts),

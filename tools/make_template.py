@@ -21,8 +21,8 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from tallycraft.packing_docx import (PARTS_TABLE_ALT_TEXT, field_reference_markdown,  # noqa: E402
-                                     field_reference_text)
+from tallycraft.packing_docx import (PARTS_TABLE_ALT_TEXT, TOTALS_TABLE_ALT_TEXT,  # noqa: E402
+                                     field_reference_markdown, field_reference_text)
 
 OUT = ROOT / "assets" / "templates" / "packing_list_template.docx"
 FONT = "Calibri"
@@ -109,8 +109,9 @@ def set_borders(table, outer=None, inner=None):
     pr.append(borders)
 
 
-def fixed_table(doc, rows, widths):
-    t = doc.add_table(rows=rows, cols=len(widths))
+def fixed_table(container, rows, widths):
+    """A fixed-layout table in the document body or in a table cell."""
+    t = container.add_table(rows=rows, cols=len(widths))
     t.autofit = False
     pr = t._tbl.tblPr
     layout = OxmlElement("w:tblLayout")
@@ -186,6 +187,46 @@ def field(p, instr, size=8, color=GREY):
             t.text = "1"
             r.append(t)
         p._p.append(r)
+
+
+def tag_cell(cell, text):
+    """A {%tc %} tag cell: 1 pt text and no cell margins, so the narrow tag column
+    stays small in the template. The column is removed when the list is filled in."""
+    cell_margins(cell, 0, 0, 0, 0)
+    return cell_text(cell, text, size=1, color=GREY)
+
+
+def alt_text(table, text):
+    desc = OxmlElement("w:tblDescription")
+    desc.set(qn("w:val"), text)
+    table._tbl.tblPr.append(desc)
+
+
+def cell_margins(cell, top, bottom, left, right):
+    pr = cell._tc.get_or_add_tcPr()
+    mar = OxmlElement("w:tcMar")
+    for side, v in (("top", top), ("left", left), ("bottom", bottom), ("right", right)):
+        el = OxmlElement(f"w:{side}")
+        el.set(qn("w:w"), str(v))
+        el.set(qn("w:type"), "dxa")
+        mar.append(el)
+    pr.append(mar)
+
+
+def cell_borders(cell, top=None, bottom=None, left=None, right=None):
+    """(size in 1/8 pt, hex color) or None for no line."""
+    pr = cell._tc.get_or_add_tcPr()
+    borders = OxmlElement("w:tcBorders")
+    for side, spec in (("top", top), ("left", left), ("bottom", bottom), ("right", right)):
+        el = OxmlElement(f"w:{side}")
+        if spec:
+            el.set(qn("w:val"), "single")
+            el.set(qn("w:sz"), str(spec[0]))
+            el.set(qn("w:color"), spec[1])
+        else:
+            el.set(qn("w:val"), "nil")
+        borders.append(el)
+    pr.append(borders)
 
 
 def cell_text(cell, text, size=9, bold=False, align=None, color=INK):
@@ -293,28 +334,32 @@ def build() -> Document:
 
     # ---- parts table. Columns 2 and 4 hold the {%tc %} tags (removed when filled in);
     # column 3 repeats once per kit. Alt Text lets TallyCraft restore these widths.
+    # The last row is one full-width cell that can't break across pages. It holds the
+    # totals (a one-row table with the same columns), footnotes, sign-off, note and shop
+    # record, so the sign-off always stays with the end of the table (Word and LibreOffice).
     widths = [0.95, 2.85, 0.05, 0.85, 0.05, 0.6, 0.75, 0.8, 0.45]
+    C, R = WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT
     t = fixed_table(body, 5, widths)
     set_borders(t, outer=(6, LINE), inner=(4, LINE))
     set_cell_margins(t, 50, 50, 70, 70)
-    desc = OxmlElement("w:tblDescription")
-    desc.set(qn("w:val"), PARTS_TABLE_ALT_TEXT)
-    t._tbl.tblPr.append(desc)
-    C, R = WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT
+    alt_text(t, PARTS_TABLE_ALT_TEXT)
     heads = ["Picture", "Part", "{%tc for h in kit_headers %}", "{{ h }}", "{%tc endfor %}", "Total count",
              "Weight per piece (g)", "Total weight (g)", "Done"]
-    for cell, text in zip(t.rows[0].cells, heads):
-        cell_text(cell, text, size=8, bold=True, align=C)
+    for i, (cell, text) in enumerate(zip(t.rows[0].cells, heads)):
+        if i in (2, 4):
+            tag_cell(cell, text)
+        else:
+            cell_text(cell, text, size=8, bold=True, align=C)
         set_cell_shading(cell, SHADE)
     row_flag(t.rows[0], "tblHeader")
     cell_text(t.rows[1].cells[0], "{%tr for p in parts %}", size=8, color=GREY)
     body_cells = t.rows[2].cells
     cell_text(body_cells[0], "{{ p.picture }}", align=C)
     para(body_cells[0], "{{ p.dimensions }}", size=6.5, color=GREY, align=C)
-    cell_text(body_cells[1], "{{ p.name }}{{ p.marker }}", size=9)
-    cell_text(body_cells[2], "{%tc for c in p.counts %}", size=8, color=GREY)
+    cell_text(body_cells[1], "{{ p.display_name }}{{ p.marker }}", size=9)
+    tag_cell(body_cells[2], "{%tc for c in p.counts %}")
     cell_text(body_cells[3], "{{ c }}", size=10, align=C)
-    cell_text(body_cells[4], "{%tc endfor %}", size=8, color=GREY)
+    tag_cell(body_cells[4], "{%tc endfor %}")
     cell_text(body_cells[5], "{{ p.total_count }}", size=10, align=C)
     cell_text(body_cells[6], "{{ p.weight_per_piece }}", size=10, align=R)
     cell_text(body_cells[7], "{{ p.total_weight }}", size=10, align=R)
@@ -322,26 +367,48 @@ def build() -> Document:
     run(box, "☐", 16, font="Segoe UI Symbol")
     row_flag(t.rows[2], "cantSplit")
     cell_text(t.rows[3].cells[0], "{%tr endfor %}", size=8, color=GREY)
+
+    end = t.rows[4].cells[0].merge(t.rows[4].cells[-1])
+    row_flag(t.rows[4], "cantSplit")
+    cell_margins(end, 0, 0, 0, 0)
+    cell_borders(end, top=(4, LINE))  # no side/bottom lines around the sign-off
+    tot_tbl = fixed_table(end, 1, widths)
+    set_borders(tot_tbl, outer=(6, LINE), inner=(4, LINE))
+    set_cell_margins(tot_tbl, 50, 50, 70, 70)
+    alt_text(tot_tbl, TOTALS_TABLE_ALT_TEXT)
+    end._tc.remove(tot_tbl._tbl)
+    end._tc.insert(end._tc.index(end._tc.tcPr) + 1, tot_tbl._tbl)  # the table first, then the paragraphs
+    for extra in end.paragraphs:
+        extra._p.getparent().remove(extra._p)
     tot = ["", "{{ total_label }}", "{%tc for k in kit_totals %}", "{{ k }}", "{%tc endfor %}",
            "{{ total_count }}", "", "{{ total_weight_measured }}", ""]
     aligns = [None, None, None, C, None, C, None, R, None]
-    for cell, text, al in zip(t.rows[4].cells, tot, aligns):
-        cell_text(cell, text, size=9.5, bold=True, align=al)
+    for i, (cell, text, al) in enumerate(zip(tot_tbl.rows[0].cells, tot, aligns)):
+        if i in (2, 4):
+            tag_cell(cell, text)
+        else:
+            cell_text(cell, text, size=9.5, bold=True, align=al)
         set_cell_shading(cell, SHADE)
-    row_flag(t.rows[4], "cantSplit")
 
-    tag(body, "{%p for f in footnotes %}")
-    para(body, "{{ f.marker }} {{ f.name }}: could not be measured, so its weight isn't in the total. "
-               "Reason: {{ f.reason }}", size=7.5, color=RED, before=2)
-    tag(body, "{%p endfor %}")
-
-    # ---- sign-off, note, shop record
-    para(body, "Packed by: ______________________________      Date: ____________________", size=10, before=20)
-    tag(body, "{%p if note_to_customer %}")
-    n = para(body, "{{ note_to_customer }}", size=10, before=14)
-    para_box(n, border=LINE, size=6)
-    tag(body, "{%p endif %}")
-    para(body, "{{ shop_record }}", size=7, color=GREY, before=18)
+    tag(end, "{%p for f in footnotes %}")
+    para(end, "{{ f.marker }} {{ f.name }}: could not be measured, so its weight isn't in the total. "
+              "Reason: {{ f.reason }}", size=7.5, color=RED, before=2)
+    tag(end, "{%p endfor %}")
+    para(end, "Packed by: ______________________________      Date: ____________________", size=10, before=20)
+    tag(end, "{%p if note_to_customer %}")
+    para(end, size=6, after=8)  # space above the note box
+    # A one-cell table, not a paragraph border: Word hides a paragraph's side borders inside a
+    # cell. No cell margins (Word would shift the table left by them and clip its left line);
+    # the text is padded with paragraph indents instead.
+    note = fixed_table(end, 1, [CONTENT_W - 0.02])
+    set_borders(note, outer=(6, LINE))
+    set_cell_margins(note, 0, 0, 0, 0)
+    n = cell_text(note.rows[0].cells[0], "{{ note_to_customer }}", size=10)
+    pf = n.paragraph_format
+    pf.left_indent = pf.right_indent = Pt(6)
+    pf.space_before = pf.space_after = Pt(4)
+    tag(end, "{%p endif %}")
+    para(end, "{{ shop_record }}", size=7, color=GREY, before=18)
     return doc
 
 

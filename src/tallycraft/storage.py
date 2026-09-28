@@ -33,6 +33,10 @@ DEFAULT_SETTINGS = {
     "cut_colors": ["ACI 7", "RGB 0,0,0"],  # colors that mean "cut"; every other color is engrave-only
     "template_path": DEFAULT_TEMPLATE_SETTING,  # packing list Word template (relative to the TallyCraft folder)
     "pdf_engine": "auto",  # Make PDFs with: "auto" (LibreOffice if installed, else Word) / "word" / "libreoffice"
+    "dimension_units": "in",  # sizes under packing-list pictures: "in" / "mm" / "file" (each file's own units)
+    # Etsy import. The API keys and tokens are NOT here: they're in etsy_connection.json (encrypted).
+    "etsy_callback_url": "http://localhost:3003/oauth/redirect",  # must match the app's registered callback
+    "etsy_mappings": {},  # remembered choices: Etsy variation (lower case) -> package preset name ("" = skip)
 }
 MAIN_SPLIT_MIN, MAIN_SPLIT_MAX = 0.15, 0.85
 TEXT_SCALE_MIN, TEXT_SCALE_MAX = 0.8, 2.5
@@ -76,6 +80,7 @@ class Storage:
         self.packing_dir = self.root / PACKING_DIR
         self.templates_dir = self.root / TEMPLATES_DIR
         self.settings_path = self.root / SETTINGS_FILE
+        self.etsy_path = self.root / "etsy_connection.json"  # Etsy keys + tokens, next to settings.json
 
     def ensure_folders(self) -> None:
         self.package_dir.mkdir(parents=True, exist_ok=True)
@@ -127,6 +132,13 @@ class Storage:
             settings["template_path"] = DEFAULT_TEMPLATE_SETTING
         if settings.get("pdf_engine") not in ("auto", "word", "libreoffice"):
             settings["pdf_engine"] = "auto"
+        if settings.get("dimension_units") not in ("in", "mm", "file"):
+            settings["dimension_units"] = "in"
+        if not isinstance(settings.get("etsy_callback_url"), str) or not settings["etsy_callback_url"].strip():
+            settings["etsy_callback_url"] = DEFAULT_SETTINGS["etsy_callback_url"]
+        mappings = settings.get("etsy_mappings")
+        settings["etsy_mappings"] = ({k: v for k, v in mappings.items() if isinstance(k, str) and isinstance(v, str)}
+                                     if isinstance(mappings, dict) else {})
         colors = settings.get("cut_colors")
         if not isinstance(colors, list) or not colors or not all(isinstance(c, str) for c in colors):
             settings["cut_colors"] = list(DEFAULT_SETTINGS["cut_colors"])
@@ -410,9 +422,13 @@ def _clean_pieces(pieces: list, where: str) -> list[dict]:
         except (TypeError, ValueError):
             count = 1
         mtime = p.get("mtime")
-        clean.append({"path": p["path"], "units": units, "count": count,
-                      "mtime": float(mtime) if isinstance(mtime, (int, float)) and not isinstance(mtime, bool)
-                      else None})
+        entry = {"path": p["path"], "units": units, "count": count,
+                 "mtime": float(mtime) if isinstance(mtime, (int, float)) and not isinstance(mtime, bool)
+                 else None}
+        name = p.get("display_name")
+        if isinstance(name, str) and name.strip():  # optional (v0.5); older presets simply don't have it
+            entry["display_name"] = name.strip()
+        clean.append(entry)
     return clean
 
 

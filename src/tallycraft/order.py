@@ -37,19 +37,26 @@ class Package:
     preset_name: str | None = None  # the package preset this came from / was saved as
     rows: dict[str, PieceRow] = field(default_factory=dict)  # tree id -> row
     order: list[str] = field(default_factory=list)  # tree ids in import order
-    # What the preset contains, for the "unsaved changes" marker: [(norm path, units|None, count)]
-    baseline: list[tuple[str, str | None, int]] = field(default_factory=list)
+    # What the preset contains, for the "unsaved changes" marker:
+    # [(norm path, units|None, count, display name)]
+    baseline: list[tuple[str, str | None, int, str]] = field(default_factory=list)
 
     def ordered_rows(self) -> list[PieceRow]:
         return [self.rows[i] for i in self.order]
 
     def pieces_spec(self) -> list[dict]:
         """The package-preset "pieces" list for the current contents."""
-        return [{"path": os.path.abspath(r.path), "units": r.unit, "count": r.count, "mtime": r.mtime}
-                for r in self.ordered_rows()]
+        out = []
+        for r in self.ordered_rows():
+            entry = {"path": os.path.abspath(r.path), "units": r.unit, "count": r.count, "mtime": r.mtime}
+            if r.display_name:
+                entry["display_name"] = r.display_name
+            out.append(entry)
+        return out
 
     def set_baseline(self, pieces: list[dict]) -> None:
-        self.baseline = [(norm_path(p["path"]), p.get("units"), int(p.get("count", 1))) for p in pieces]
+        self.baseline = [(norm_path(p["path"]), p.get("units"), int(p.get("count", 1)),
+                          (p.get("display_name") or "").strip()) for p in pieces]
 
     def mark_saved(self, preset_name: str) -> None:
         self.preset_name = preset_name
@@ -59,9 +66,9 @@ class Package:
     @property
     def is_dirty(self) -> bool:
         headers = {norm_path(r.path): r.parsed.header_unit for r in self.ordered_rows()}
-        current = sorted((norm_path(r.path), r.unit, r.count) for r in self.ordered_rows())
+        current = sorted((norm_path(r.path), r.unit, r.count, r.display_name) for r in self.ordered_rows())
         # A preset entry without units means "whatever the file's header says".
-        base = sorted((p, u if u is not None else headers.get(p), c) for p, u, c in self.baseline)
+        base = sorted((p, u if u is not None else headers.get(p), c, d) for p, u, c, d in self.baseline)
         return current != base
 
     def status_summary(self, conflicts: int = 0) -> str:
@@ -145,13 +152,14 @@ class Order:
 
 @dataclass(frozen=True)
 class MergedPiece:
-    name: str  # display name (file name; folder added if two files share a name)
+    name: str  # file name (folder added if two files share a name)
     path: str
     kit_counts: tuple[int | None, ...]  # this kit's count, or None if the kit doesn't use it
     total_count: int
     area_cm2: float | None
     error: str = ""  # non-empty -> skipped from the totals
     warnings: tuple[str, ...] = ()
+    display_name: str = ""  # from the pieces table ("" = use the file name)
 
 
 def merge_order(order: Order) -> tuple[list[str], list[MergedPiece]]:
@@ -201,6 +209,11 @@ def merge_order(order: Order) -> tuple[list[str], list[MergedPiece]]:
                      "Use Re-read Selected in each package so they match.")
         warnings = tuple(f"{m.text} (in package \"{p.name}\")" for p, r in members
                          for m in r.messages if m.level == Level.WARNING)
+        names = list(dict.fromkeys(r.display_name for _p, r in members if r.display_name))
+        if len(names) > 1:
+            warnings += (f"Different display names in different packages ({', '.join(repr(n) for n in names)}); "
+                         f"packing lists use {names[0]!r}.",)
         merged.append(MergedPiece(name, first.path, tuple(kit_counts), total,
-                                  None if error else first.area_cm2, error, warnings))
+                                  None if error else first.area_cm2, error, warnings,
+                                  names[0] if names else ""))
     return labels, merged

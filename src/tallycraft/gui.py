@@ -21,6 +21,8 @@ from .calc import (LABEL_TO_UNIT, SKIPPED_LABEL, UNIT_LABELS, PieceInput, Skippe
 from .calibration import (MODE_CONTROL, MODE_REFERENCE, MODES, TIP as CAL_TIP, ReferencePiece, SavedReference,
                           describe, parse_positive_int, validate_reference)
 from .dxf_geometry import cut_colors_from_settings
+from .etsy import EtsyAccount, match_items, packages_for
+from .etsy_ui import OrderPicker, UnmatchedDialog, run_background
 from .messages import Level
 from .order import BLANK_NAME, Order, Package, merge_order, norm_path
 from .packing import build_record, default_filename, encode_logo, items_ordered, now_stamp, picture_from_parsed
@@ -38,7 +40,8 @@ ROW_TAGS = {Level.OK: "ok", Level.INFO: "info", Level.WARNING: "warning", Level.
 PIECE_COLUMNS = [
     ("count", "Count", 60, "center"),
     ("file", "File Name", 230, "w"),
-    ("units", "Units", 100, "center"),
+    ("display", "Display name", 170, "w"),
+    ("units", "File units", 100, "center"),
     ("bbox", "Bounding Box (W × H)", 190, "center"),
     ("area", "Area", 140, "e"),
     ("modified", "Date Modified", 135, "center"),
@@ -59,6 +62,8 @@ ORDER_COLUMNS = [
     ("status", "Status", 320, "w"),
 ]
 UNIT_CHOICES = [UNIT_LABELS["in"], UNIT_LABELS["mm"], UNIT_LABELS["unknown"]]
+FILE_UNITS_TIP = ("What unit the numbers in this DXF file are in. Change this only if the file is wrong. "
+                  "It relabels the numbers without converting them.")
 
 # Tk's Treeview only lets a column be dragged wider/narrower if a *stretchable*
 # column lies to its right to absorb the difference; otherwise the drag snaps
@@ -121,6 +126,16 @@ class Tooltip:
             self.tip.destroy()
         self.tip = None
         self.text = None
+
+
+def focused_path(widget: tk.Misc) -> str:
+    """Tk path of the widget with keyboard focus ("" if none). Unlike focus_get(), this
+    never looks the path up as a tkinter widget. That lookup raises KeyError: 'popdown'
+    while a combobox's dropdown list has focus (Tk creates that list itself)."""
+    try:
+        return str(widget.tk.call("focus") or "")
+    except tk.TclError:
+        return ""
 
 
 def choose_from_list(parent, title: str, prompt: str, names: list[str], ok_text: str = "Load") -> str | None:
@@ -209,6 +224,8 @@ class TallyCraftApp(tk.Tk):
             self.storage.ensure_templates(bundled_template())
         except OSError as exc:
             self._startup_notes.append(f"The packing list template folder couldn't be set up ({exc}).")
+        self.etsy = EtsyAccount(self.storage.etsy_path)
+        self._etsy_prefill: tuple[Order, dict] | None = None  # customer details imported for this order
 
         self.fonts = {name: tkfont.Font(self, family="Segoe UI", size=size, weight=weight)
                       for name, (size, weight) in BASE_FONTS.items()}
@@ -347,6 +364,7 @@ class TallyCraftApp(tk.Tk):
         ttk.Button(bar, text="Remove", command=self.remove_package).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="Load Order…", command=self.load_order).pack(side="right")
         ttk.Button(bar, text="Save Order…", command=self.save_order).pack(side="right", padx=(0, 6))
+        ttk.Button(bar, text="Import from Etsy…", command=self.import_from_etsy).pack(side="right", padx=(0, 6))
 
         cols = [c[0] for c in ORDER_COLUMNS] + [FILLER]
         self.order_tree = ttk.Treeview(box, columns=cols, show="headings", selectmode="browse", height=3)
@@ -470,7 +488,8 @@ class TallyCraftApp(tk.Tk):
         """Parse a preset-style pieces list into `pkg` (not necessarily the one on screen)."""
         for p in pieces:
             row = PieceRow.load(p["path"], self._ignored_layers(), unit=p["units"], count=p["count"],
-                                stored_mtime=p["mtime"], saved_what=saved_what, cut_colors=self._cut_colors())
+                                stored_mtime=p["mtime"], saved_what=saved_what, cut_colors=self._cut_colors(),
+                                display_name=p.get("display_name", ""))
             iid = self._new_iid()
             pkg.rows[iid] = row
             pkg.order.append(iid)
@@ -629,6 +648,104 @@ class TallyCraftApp(tk.Tk):
             msg += f" {missing} file(s) are missing."
         self._status(msg)
 
+    # ---- Etsy import
+
+    def import_from_etsy(self) -> None:
+        """Choose an open Etsy order: build the order from package presets and remember the
+        customer details for Create Packing List. Calibration stays manual."""
+        self._close_editor()
+        if not self.etsy.connected:
+            if messagebox.askyesno(APP_NAME, "TallyCraft isn't connected to your Etsy shop yet.\n\nOpen Settings "
+                                             "to enter your Etsy keys and connect?", parent=self):
+                self.open_settings()
+            return
+        self.config(cursor="watch")
+        self._status("Getting open orders from Etsy…")
+        run_background(self, self.etsy.open_orders, self._etsy_orders_arrived, self._etsy_failed)
+
+    def _etsy_failed(self, exc) -> None:
+        self.config(cursor="")
+        self._status("Couldn't get orders from Etsy.")
+        if exc.kind == "expired":
+            if messagebox.askyesno(APP_NAME, f"{exc}\n\nOpen Settings now?", parent=self):
+                self.open_settings()
+        else:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+
+    def _etsy_orders_arrived(self, result) -> None:
+        self.config(cursor="")
+        orders, total = result
+        if not orders:
+            self._status("No open Etsy orders.")
+            messagebox.showinfo(APP_NAME, f"There are no paid, unshipped orders in {self.etsy.shop_name} right now.",
+                                parent=self)
+            return
+        self._status(f"{len(orders)} open Etsy order(s).")
+        presets = [e.name for e in self.storage.list_packages()]
+        mappings = self.settings.setdefault("etsy_mappings", {})
+        chosen = OrderPicker(self, orders, total, presets, mappings).run()
+        if chosen is None:
+            return
+        if not self.order.is_single_blank() and not messagebox.askyesno(
+                APP_NAME, "Importing an Etsy order replaces the current order (all of its packages). Continue?",
+                parent=self):
+            return
+        matches = match_items(chosen, presets, mappings)
+        unmatched = [m for m in matches if m.how == ""]
+        if unmatched:
+            answers = UnmatchedDialog(self, unmatched, presets).run()
+            if answers is None:
+                return
+            remembered = False
+            for m, (preset, remember) in zip(unmatched, answers):
+                m.preset, m.how = preset, ("chosen" if preset else "skipped")
+                if remember:
+                    mappings[m.item.key.strip().casefold()] = preset or ""
+                    remembered = True
+            if remembered:
+                self._save_settings_quietly(show_errors=True)
+        self._build_order_from_etsy(chosen, matches)
+
+    def _build_order_from_etsy(self, chosen, matches) -> None:
+        new = Order()
+        problems = []
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            for preset, qty in packages_for(matches):
+                try:
+                    data = self.storage.load_package(preset)
+                except PresetError as exc:
+                    problems.append(str(exc))
+                    continue
+                pkg = Package(new.unique_name(preset), quantity=qty, preset_name=preset)
+                self._load_rows_into(pkg, data["pieces"], "preset")
+                pkg.set_baseline(data["pieces"])
+                new.packages.append(pkg)
+        finally:
+            self.config(cursor="")
+        if not new.packages:
+            new = Order.with_blank_package()
+        self.order = new
+        self._etsy_prefill = (new, chosen.prefill())
+        self._select_package(new.packages[0])
+        self._sync_reference()
+        self._invalidate_results()
+        skipped = [m.item.describe() for m in matches if not m.preset]
+        msg = f"Imported Etsy order #{chosen.receipt_id} ({chosen.buyer_name})"
+        msg += f": {items_ordered([{'name': p.name, 'quantity': p.quantity} for p in new.packages])}." \
+            if any(p.order for p in new.packages) else ": no packages."
+        if skipped:
+            msg += f" Skipped: {'; '.join(skipped)}."
+        modified, missing = self._file_problem_counts(new.packages)
+        if modified or missing:
+            msg += f" {modified + missing} file(s) changed or missing — see the Status column."
+        self._status(msg)
+        detail = "\n\n".join(problems)
+        messagebox.showinfo(APP_NAME, msg + "\n\nCheck the calibration, press Calculate, then Create Packing List: "
+                            "the customer details are filled in for you." + (f"\n\n{detail}" if detail else ""),
+                            parent=self)
+
     # ------------------------------------------------------------------ pieces section
 
     def _build_pieces_section(self, parent) -> ttk.Frame:
@@ -686,6 +803,7 @@ class TallyCraftApp(tk.Tk):
         self.details = tk.Text(side, height=6, width=40, wrap="word", relief="solid", borderwidth=1,
                                background="#fafafa", font=self.fonts["details"])
         self.preview = PiecePreview(side, width=380, height=170)
+        self.preview.dim_units = self.settings.get("dimension_units", "in")
         side.add(self.details, weight=3)
         side.add(self.preview, weight=2)
         self._set_details("Select a row to see its details here.")
@@ -709,8 +827,9 @@ class TallyCraftApp(tk.Tk):
         return f"r{self._iid_counter}"
 
     def _row_values(self, row: PieceRow):
-        return (row.count, row.name, UNIT_LABELS.get(row.unit, "Unknown"), row.bbox_text(),
-                row.area_text(), row.mtime_text(), STATUS_TEXT[row.status])
+        show = self.settings.get("dimension_units", "in")  # Settings > "Show dimensions in"
+        return (row.count, row.name, row.display_name, UNIT_LABELS.get(row.unit, "Unknown"), row.bbox_text(show),
+                row.area_text(show), row.mtime_text(), STATUS_TEXT[row.status])
 
     def _add_row(self, row: PieceRow) -> str:
         """Append a row in import order. Callers re-apply any active sort afterwards."""
@@ -820,7 +939,7 @@ class TallyCraftApp(tk.Tk):
             old = self.rows[iid]
             unit = old.unit if old.unit != old.parsed.header_unit else None
             new = PieceRow.load(old.path, self._ignored_layers(), unit=unit, count=old.count,
-                                cut_colors=self._cut_colors())
+                                cut_colors=self._cut_colors(), display_name=old.display_name)
             self.rows[iid] = new
             self._refresh_row(iid)
         self._sync_reference()
@@ -863,10 +982,13 @@ class TallyCraftApp(tk.Tk):
     def _on_tree_motion(self, event):
         iid = self.tree.identify_row(event.y)
         col = self.tree.identify_column(event.x)
+        units_col = f"#{[c[0] for c in PIECE_COLUMNS].index('units') + 1}"
         if iid and col == f"#{len(PIECE_COLUMNS)}" and iid in self.rows:
             row = self.rows[iid]
             text = "\n".join(f"• [{m.level.label}] {m.text}" for m in row.messages) or "No problems found."
             self.tooltip.show(text, event.x_root, event.y_root)
+        elif col == units_col and self.tree.identify_region(event.x, event.y) in ("heading", "cell"):
+            self.tooltip.show(FILE_UNITS_TIP, event.x_root, event.y_root)
         else:
             self.tooltip.hide()
 
@@ -885,7 +1007,36 @@ class TallyCraftApp(tk.Tk):
             self._edit_count(iid, col)
         elif key == "units":
             self._edit_units(iid, col)
+        elif key == "display":
+            self._edit_display_name(iid, col)
         return "break"
+
+    def _edit_display_name(self, iid, col):
+        """Optional name for packing lists (saved in package presets); empty = the file name."""
+        self._close_editor()
+        row = self.rows[iid]
+        var = tk.StringVar(value=row.display_name)
+        entry = ttk.Entry(self.tree, textvariable=var)
+
+        def commit(*_):
+            if self._editor is not entry:
+                return
+            self._close_editor()
+            new = var.get().strip()
+            if new != row.display_name:
+                row.display_name = new
+                self._refresh_row(iid)
+                self._invalidate_results()  # packing lists use the name from the last Calculate
+                self._status(f"{row.name}: display name " + (f"set to \"{new}\"." if new else "cleared (the file "
+                                                                                        "name is used)."))
+
+        entry.bind("<Return>", commit)
+        entry.bind("<KP_Enter>", commit)
+        entry.bind("<FocusOut>", commit)
+        entry.bind("<Escape>", lambda e: self._close_editor())
+        self._place_editor(entry, iid, col)
+        entry.select_range(0, "end")
+        entry.icursor("end")
 
     def _place_editor(self, widget, iid, col, tree=None):
         tree = tree or self.tree
@@ -946,7 +1097,8 @@ class TallyCraftApp(tk.Tk):
                 row.unit = new
                 self._refresh_row(iid)
                 self._invalidate_results()
-                self._status(f"{row.name}: units changed to {UNIT_LABELS[new]} — size and area re-derived.")
+                self._status(f"{row.name}: File units set to {UNIT_LABELS[new]}. The file's numbers are now read "
+                             "as that unit (relabelled, not converted).")
 
         combo.bind("<<ComboboxSelected>>", commit)
         combo.bind("<Escape>", lambda e: self._close_editor())
@@ -954,7 +1106,7 @@ class TallyCraftApp(tk.Tk):
         def focus_out(_):
             # The dropdown list takes focus while open; only close when focus truly left.
             def check():
-                focused = str(self.focus_get() or "")
+                focused = focused_path(self)
                 if self._editor is combo and not focused.startswith(str(combo)):
                     self._close_editor()
             self.after(50, check)
@@ -1398,6 +1550,7 @@ class TallyCraftApp(tk.Tk):
             "packages": [{"name": p.name, "preset_name": p.preset_name, "quantity": p.quantity,
                           "unsaved_changes": p.is_dirty, "pieces": p.pieces_spec()} for p in self.order.packages],
             "pieces_info": {m.name: {"path": m.path, "unit": rows[norm_path(m.path)].unit,
+                                     "display_name": m.display_name,
                                      "picture": picture_from_parsed(rows[norm_path(m.path)].parsed)}
                             for m in merged},
             "calibration": self._calibration_record(calibration),
@@ -1442,8 +1595,9 @@ class TallyCraftApp(tk.Tk):
             return
         if result.skipped and not confirm_skipped(self, result.skipped):
             return
+        prefill = self._etsy_prefill[1] if self._etsy_prefill and self._etsy_prefill[0] is self.order else None
         customer = PackingDialog(self, self.settings.get("default_note") or "", self.storage.packing_dir,
-                                 items_ordered(snap["packages"]), len(result.skipped)).run()
+                                 items_ordered(snap["packages"]), len(result.skipped), prefill=prefill).run()
         if customer is None:
             return
         notes = []
@@ -1476,7 +1630,7 @@ class TallyCraftApp(tk.Tk):
         self.update_idletasks()
         try:
             with tempfile.TemporaryDirectory(prefix="tallycraft_") as work:
-                render_docx(record, template, docx_path, work)
+                render_docx(record, template, docx_path, work, self.settings.get("dimension_units", "in"))
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"The template couldn't be filled in ({exc}). The record was saved, so "
                                            "you can re-print it after fixing the template (File > Open Packing "
@@ -1581,12 +1735,16 @@ class TallyCraftApp(tk.Tk):
 
     def open_settings(self) -> None:
         old_colors = list(self.settings.get("cut_colors") or [])
-        result = SettingsDialog(self, self.settings, self.storage, self.show_template_help).run()
+        old_dims = self.settings.get("dimension_units", "in")
+        result = SettingsDialog(self, self.settings, self.storage, self.show_template_help, etsy=self.etsy).run()
         if result is None:
             return
         self.settings.update(result)
         self._save_settings_quietly(show_errors=True)
         self._status("Settings saved.")
+        if self.settings.get("dimension_units", "in") != old_dims:  # sizes in the pieces table and preview
+            self.preview.dim_units = self.settings.get("dimension_units", "in")
+            self._select_package(self.current_pkg)
         if result.get("cut_colors") != old_colors and any(p.order for p in self.order.packages):
             if messagebox.askyesno(APP_NAME, "The cut colors changed. Re-read every piece now so the new colors "
                                              "apply?", parent=self):
@@ -1602,7 +1760,7 @@ class TallyCraftApp(tk.Tk):
                     old = pkg.rows[iid]
                     unit = old.unit if old.unit != old.parsed.header_unit else None
                     pkg.rows[iid] = PieceRow.load(old.path, self._ignored_layers(), unit=unit, count=old.count,
-                                                  cut_colors=self._cut_colors())
+                                                  cut_colors=self._cut_colors(), display_name=old.display_name)
         finally:
             self.config(cursor="")
         self._select_package(self.current_pkg)

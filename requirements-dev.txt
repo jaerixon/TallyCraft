@@ -1,4 +1,5 @@
 -r requirements.txt
 pyinstaller>=6.10
 pytest>=8
+pytest-rerunfailures>=14  # reruns only the Tk startup flake (tests/test_gui_packing.py)
 pyflakes>=3

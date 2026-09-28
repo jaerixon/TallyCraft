@@ -34,6 +34,15 @@ def _text(parent, height: int, initial: str = "") -> tk.Text:
     t = tk.Text(parent, height=height, width=46, wrap="word", relief="solid", borderwidth=1, font=("Segoe UI", 10))
     if initial:
         t.insert("1.0", initial)
+
+    def newline(_event):
+        # Enter always means "new line" in multi-line fields, and stops here so no
+        # dialog or app-level Enter handling can ever act on it.
+        t.insert("insert", "\n")
+        t.see("insert")
+        return "break"
+    for seq in ("<Return>", "<KP_Enter>", "<Shift-Return>"):
+        t.bind(seq, newline)
     return t
 
 
@@ -46,21 +55,26 @@ def _text_value(t: tk.Text) -> str:
 class PackingDialog(_Modal):
     """Customer details for a new packing list. result: dict or None."""
 
-    def __init__(self, parent, default_note: str, packing_dir: Path, items: str, skipped_count: int):
+    def __init__(self, parent, default_note: str, packing_dir: Path, items: str, skipped_count: int,
+                 prefill: dict | None = None):
+        """prefill: customer details to start from (e.g. imported from Etsy); still editable."""
         super().__init__(parent, "Create Packing List")
+        prefill = prefill or {}
         b = self.body
         b.columnconfigure(1, weight=1)
-        self.name = tk.StringVar()
-        self.order_no = tk.StringVar()
-        self.order_date = tk.StringVar(value=date.today().isoformat())
+        self.name = tk.StringVar(value=prefill.get("name", ""))
+        self.order_no = tk.StringVar(value=prefill.get("etsy_order", ""))
+        self.order_date = tk.StringVar(value=prefill.get("order_date") or date.today().isoformat())
         ttk.Label(b, text=f"Items: {items}", style="Hint.TLabel", wraplength=460).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Label(b, text="Customer name *").grid(row=1, column=0, sticky="w", padx=(0, 8))
         name_entry = ttk.Entry(b, textvariable=self.name, width=40)
         name_entry.grid(row=1, column=1, sticky="ew", pady=3)
         ttk.Label(b, text="Shipping address").grid(row=2, column=0, sticky="nw", padx=(0, 8), pady=3)
-        self.address = _text(b, 4)
+        self.address = _text(b, 4, prefill.get("address", ""))
         self.address.grid(row=2, column=1, sticky="nsew", pady=3)
+        ttk.Label(b, text="Enter adds a new line.", style="Hint.TLabel").grid(row=2, column=0, sticky="sw",
+                                                                             padx=(0, 8), pady=3)
         ttk.Label(b, text="Etsy order number").grid(row=3, column=0, sticky="w", padx=(0, 8))
         ttk.Entry(b, textvariable=self.order_no, width=24).grid(row=3, column=1, sticky="w", pady=3)
         ttk.Label(b, text="Order date").grid(row=4, column=0, sticky="w", padx=(0, 8))
@@ -106,7 +120,15 @@ class PackingDialog(_Modal):
         if problems:
             self.error.configure(text="\n".join(problems))
             return
-        self.result = {"name": self.name.get().strip(), "address": _text_value(self.address),
+        address = _text_value(self.address)
+        if address and "\n" not in address and "," not in address and not messagebox.askyesno(
+                "Create Packing List",
+                f"The shipping address is only one line:\n\n{address}\n\nIs that the complete address? "
+                "(Press Enter in the address box for each new line.)", parent=self):
+            self.address.focus_set()
+            self.address.mark_set("insert", "end")
+            return
+        self.result = {"name": self.name.get().strip(), "address": address,
                        "etsy_order": self.order_no.get().strip(), "order_date": order_date,
                        "note": _text_value(self.note)}
         self.destroy()
@@ -192,9 +214,9 @@ class PackingViewer(tk.Toplevel):
 # ============================================================================ settings
 
 class SettingsDialog(_Modal):
-    """Shop details, packing-list template, and cut colors. result: dict of settings, or None."""
+    """Shop details, packing-list template, cut colors, and Etsy. result: dict of settings, or None."""
 
-    def __init__(self, parent, settings: dict, storage=None, show_help=None):
+    def __init__(self, parent, settings: dict, storage=None, show_help=None, etsy=None):
         super().__init__(parent, "Settings")
         self.storage = storage
         b = self.body
@@ -205,6 +227,9 @@ class SettingsDialog(_Modal):
         from .pdf_convert import ENGINES, find_soffice
         self._engines = ENGINES
         self.engine = tk.StringVar(value=ENGINES.get(settings.get("pdf_engine", "auto"), "Automatic"))
+        from .packing_docx import DIMENSION_UNITS
+        self._dim_units = DIMENSION_UNITS
+        self.dims = tk.StringVar(value=DIMENSION_UNITS.get(settings.get("dimension_units", "in"), "Inches"))
 
         ttk.Label(b, text="PACKING LISTS", style="Hint.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(b, text="Shop name").grid(row=1, column=0, sticky="w", padx=(0, 8))
@@ -237,23 +262,33 @@ class SettingsDialog(_Modal):
         engine_box.grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Combobox(engine_box, textvariable=self.engine, values=list(ENGINES.values()), state="readonly",
                      width=14).pack(side="left")
+        dims_box = ttk.Frame(b)
+        ttk.Label(b, text="Show dimensions in").grid(row=8, column=0, sticky="w", padx=(0, 8))
+        dims_box.grid(row=8, column=1, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Combobox(dims_box, textvariable=self.dims, values=list(DIMENSION_UNITS.values()), state="readonly",
+                     width=20).pack(side="left")
+        ttk.Label(dims_box, text="  (the size printed under each part picture)", style="Hint.TLabel").pack(side="left")
         lo = "LibreOffice found" if find_soffice() else "LibreOffice not found"
         ttk.Label(engine_box, text=f"  Automatic = LibreOffice if installed, otherwise Word ({lo}).",
                   style="Hint.TLabel").pack(side="left")
 
-        ttk.Label(b, text="DXF FILES", style="Hint.TLabel").grid(row=8, column=0, columnspan=3, sticky="w")
-        ttk.Label(b, text="Cut colors").grid(row=9, column=0, sticky="nw", padx=(0, 8), pady=3)
+        ttk.Label(b, text="DXF FILES", style="Hint.TLabel").grid(row=9, column=0, columnspan=3, sticky="w")
+        ttk.Label(b, text="Cut colors").grid(row=10, column=0, sticky="nw", padx=(0, 8), pady=3)
         self.colors = _text(b, 3, "\n".join(settings.get("cut_colors") or ["ACI 7", "RGB 0,0,0"]))
         self.colors.configure(width=20)
-        self.colors.grid(row=9, column=1, sticky="w", pady=3)
+        self.colors.grid(row=10, column=1, sticky="w", pady=3)
         ttk.Label(b, text="One per line: an ACI number (ACI 7) or R,G,B (RGB 0,0,0). Lines in these colors are "
                           "cut and measured; every other color is engrave-only (drawn, not weighed). Default: "
-                          "black only.", style="Hint.TLabel", wraplength=440).grid(row=10, column=1, columnspan=2,
+                          "black only.", style="Hint.TLabel", wraplength=440).grid(row=11, column=1, columnspan=2,
                                                                                   sticky="w")
+        self.etsy = None
+        if etsy is not None:
+            from .etsy_ui import EtsySettings
+            self.etsy = EtsySettings(self, b, 12, etsy, settings)  # rows 12-17
         self.error = ttk.Label(b, text="", style="Error.TLabel", wraplength=440)
-        self.error.grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.error.grid(row=18, column=0, columnspan=3, sticky="w", pady=(6, 0))
         btns = ttk.Frame(b)
-        btns.grid(row=12, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        btns.grid(row=19, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(btns, text="Save", command=self._ok, default="active").pack(side="right", padx=6)
         self._entry = entry
@@ -313,13 +348,22 @@ class SettingsDialog(_Modal):
         template = self.template.get().strip()
         if template and not template.lower().endswith(".docx"):
             problems.append("The packing list template must be a Word .docx file.")
+        if self.etsy is not None:
+            try:
+                self.etsy.save_keys()
+            except OSError as exc:
+                problems.append(f"The Etsy keys couldn't be saved ({exc.strerror}).")
         if problems:
             self.error.configure(text="\n".join(problems))
             return
         engine = next((k for k, v in self._engines.items() if v == self.engine.get()), "auto")
+        dims = next((k for k, v in self._dim_units.items() if v == self.dims.get()), "in")
         self.result = {"shop_name": self.shop.get().strip(), "logo_path": logo or None,
                        "default_note": _text_value(self.note), "cut_colors": colors,
-                       "template_path": template or "templates/packing_list_template.docx", "pdf_engine": engine}
+                       "template_path": template or "templates/packing_list_template.docx", "pdf_engine": engine,
+                       "dimension_units": dims}
+        if self.etsy is not None:
+            self.result.update(self.etsy.values())
         self.destroy()
 
     def run(self):

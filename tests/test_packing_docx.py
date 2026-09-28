@@ -10,7 +10,7 @@ from docx import Document
 from docx.oxml.ns import qn
 from PIL import Image
 
-from tallycraft.order import Order, Package
+from tallycraft.order import Order, Package, merge_order
 from tallycraft.packing_docx import (DEFAULT_GEOMETRY, FIELDS, KNOWN_FIELDS, bundled_template, build_context,
                                      field_reference_markdown, field_reference_text, plan_kit_columns,
                                      read_table_geometry, render_docx, render_picture_png, validate_template)
@@ -26,9 +26,8 @@ TEMPLATE = bundled_template()
 def docx_text(path) -> str:
     doc = Document(str(path))
     parts = [p.text for p in doc.paragraphs]
-    for t in doc.tables:
-        for row in t.rows:
-            parts += [c.text for c in row.cells]
+    for t in doc.tables:  # every paragraph, including tables inside cells (the totals/sign-off row)
+        parts += ["".join(x.text or "" for x in p.iter(qn("w:t"))) for p in t._tbl.iter(qn("w:p"))]
     parts += [p.text for p in doc.sections[0].footer.paragraphs]
     return "\n".join(parts)
 
@@ -36,6 +35,14 @@ def docx_text(path) -> str:
 def parts_table(path):
     doc = Document(str(path))
     return next(t for t in doc.tables if t.rows[0].cells[0].text.strip() == "Picture")
+
+
+def table_rows(path):
+    """Header, part rows and totals row in order, including the last part row and the
+    totals, which sit in a table inside the unsplittable end row (with the sign-off)."""
+    t = parts_table(path)
+    nested = t.rows[-1].cells[0].tables
+    return list(t.rows[:-1]) + (list(nested[0].rows) if nested else [t.rows[-1]])
 
 
 def fill(record, tmp_path, name="out.docx", template=TEMPLATE):
@@ -65,10 +72,11 @@ def test_fill_multi_kit_order(order, tmp_path):
     assert header[2:5] == ["XL Standard Box (1 of 2)", "XL Standard Box (2 of 2)", "XL Tunnel + Ramp"]
     assert header[5:] == ["Total count", "Weight per piece (g)", "Total weight (g)", "Done"]
     # header + one row per part (side, floor, gap) + totals row
-    assert len(t.rows) == 1 + 3 + 1
-    side = next(r for r in t.rows if r.cells[1].text.startswith("side"))
+    rows = table_rows(out)
+    assert len(rows) == 1 + 3 + 1
+    side = next(r for r in rows if r.cells[1].text.startswith("side"))
     assert [c.text for c in side.cells[2:6]] == ["2", "2", "3", "7"]
-    floor = next(r for r in t.rows if r.cells[1].text.startswith("floor"))
+    floor = next(r for r in rows if r.cells[1].text.startswith("floor"))
     assert [c.text for c in floor.cells[2:5]] == ["1", "1", "—"]
 
 
@@ -94,12 +102,41 @@ def test_column_widths_follow_the_template(order, tmp_path):
     assert grid[2] == grid[3] == grid[4]  # kit columns share the rest equally
 
 
+@pytest.mark.parametrize("qty_a, qty_b", [(1, 0), (2, 1), (4, 4), (15, 0), (40, 40)])
+def test_table_end_stays_with_the_sign_off(order, tmp_path, qty_a, qty_b):
+    """The last part row, totals, footnotes, sign-off, note and shop record share one
+    unsplittable row that spans every column, whatever the number of kit columns."""
+    order.packages[0].quantity = qty_a
+    if qty_b:
+        order.packages[1].quantity = qty_b
+    else:
+        del order.packages[1]
+    out, plan = fill(make_record(order), tmp_path)
+    t = parts_table(out)
+    ncols = len(t.rows[0].cells)
+    grid = t._tbl.tblGrid.findall(qn("w:gridCol"))
+    assert len(grid) == ncols
+    end = t.rows[-1]._tr
+    assert end.find(f"{qn('w:trPr')}/{qn('w:cantSplit')}") is not None
+    tcs = end.findall(qn("w:tc"))
+    assert len(tcs) == 1 and int(tcs[0].find(f"{qn('w:tcPr')}/{qn('w:gridSpan')}").get(qn("w:val"))) == ncols
+    cell = t.rows[-1].cells[0]
+    inner = cell.tables[0]
+    assert len(inner.rows) == 2  # the last part row + the totals row
+    assert inner.rows[1].cells[1].text.startswith("Total")
+    assert [g.get(qn("w:w")) for g in inner._tbl.tblGrid.findall(qn("w:gridCol"))] == [g.get(qn("w:w")) for g in grid]
+    text = "\n".join(p.text for p in cell.paragraphs)
+    assert "Packed by:" in text and "Shop record" in text
+    assert "Thanks!" in cell.tables[1].rows[0].cells[0].text  # the note box
+    assert len(t.rows) == 1 + (len(table_rows(out)) - 1 - 2) + 1  # header, other parts, end row
+
+
 def test_unmeasured_parts(order, tmp_path):
     out, _plan = fill(make_record(order), tmp_path)
     text = docx_text(out)
     assert "WARNING: Total weight excludes 1 part that could not be measured" in text
     assert "*1 gap: could not be measured" in text
-    gap = next(r for r in parts_table(out).rows if r.cells[1].text.startswith("gap"))
+    gap = next(r for r in table_rows(out) if r.cells[1].text.startswith("gap"))
     assert gap.cells[1].text.endswith("*1")
     assert [c.text for c in gap.cells[6:8]] == ["—", "—"]
     assert "Total (measured parts)" in text
@@ -381,3 +418,55 @@ def test_lightburn_panel_picture_has_engrave(tmp_path):
     pic = picture_from_parsed(PieceRow.load(str(lb)).parsed)
     assert len(pic["engrave"]) == 151 and len(pic["loops"]) == 23
     render_picture_png(pic, tmp_path / "lb.png", 0.81)
+
+
+# ---------------------------------------------------------------- display names & dimension units (v0.5)
+
+def test_display_name_on_packing_list(order, tmp_path):
+    side = next(r for _p, _i, r in order.all_rows() if r.name == "side.dxf")
+    for _p, _i, r in order.all_rows():
+        if r.name == "side.dxf":
+            r.display_name = "Side Wall"
+        if r.name == "gap.dxf":
+            r.display_name = "Broken Bit"
+    _labels, merged = merge_order(order)
+    rec = make_record(order)
+    for line in rec["results"]["lines"]:  # make_record builds pieces_info without display names
+        line["display_name"] = next(m.display_name for m in merged if m.name == line["name"])
+    ctx = build_context(rec, {"mode": "full", "headers": [], "indices": [], "legend": []})
+    by_file = {p["name"]: p for p in ctx["parts"]}
+    assert by_file["side"]["display_name"] == "Side Wall"  # p.display_name: the name to show
+    assert by_file["floor"]["display_name"] == "floor"  # no display name: the file name
+    assert ctx["footnotes"][0]["name"] == "Broken Bit"
+    out, _plan = fill(rec, tmp_path)
+    text = docx_text(out)
+    assert "Side Wall" in text and "Broken Bit *1" in text and side.name not in text
+
+
+@pytest.mark.parametrize("unit, show, expected", [
+    ("in", "in", "4.000 × 2.000 in"),
+    ("in", "mm", "101.6 × 50.8 mm"),
+    ("mm", "in", "3.937 × 1.969 in"),
+    ("mm", "mm", "100.0 × 50.0 mm"),
+    ("mm", "file", "100.0 × 50.0 mm"),
+    ("in", "file", "4.000 × 2.000 in"),
+    (None, "in", "4.000 × 2.000"),  # unknown units can't be converted
+])
+def test_dimension_units(unit, show, expected):
+    from tallycraft.packing_docx import _dims
+    bbox = [4.0, 2.0] if unit != "mm" else [100.0, 50.0]
+    assert _dims({"unit": unit, "picture": {"bbox": bbox}}, show) == expected
+
+
+def test_dimension_units_setting_reaches_the_document(order, tmp_path):
+    rec = make_record(order)
+    out = tmp_path / "mm.docx"
+    render_docx(rec, TEMPLATE, out, tmp_path / "work", "mm")
+    assert "101.6 × 50.8 mm" in docx_text(out)
+
+
+def test_dimension_units_setting_is_sanitized(tmp_path):
+    s = Storage(tmp_path)
+    s.ensure_folders()
+    s.settings_path.write_text('{"dimension_units": "furlongs"}', encoding="utf-8")
+    assert s.load_settings()[0]["dimension_units"] == "in"

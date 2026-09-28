@@ -31,6 +31,7 @@ class PiecePreview(tk.Canvas):
         super().__init__(parent, **kw)
         self._row: PieceRow | None = None
         self._placeholder = "Select a piece to preview it."
+        self.dim_units = "file"  # Settings > "Show dimensions in": "in" / "mm" / "file"
         self.bind("<Configure>", lambda e: self.redraw())
 
     def show(self, row: PieceRow | None, placeholder: str | None = None) -> None:
@@ -43,9 +44,16 @@ class PiecePreview(tk.Canvas):
 
     # ------------------------------------------------------------------ drawing
 
+    def _size(self) -> tuple[int, int]:
+        """Drawing size: the real size on screen, or the requested size while not shown
+        (e.g. before the window first appears, and in tests, which never show windows)."""
+        if self.winfo_ismapped():
+            return self.winfo_width(), self.winfo_height()
+        return self.winfo_reqwidth(), self.winfo_reqheight()
+
     def redraw(self) -> None:
         self.delete("all")
-        w, h = self.winfo_width(), self.winfo_height()
+        w, h = self._size()
         if w < 40 or h < 40:
             return
         row = self._row
@@ -108,8 +116,8 @@ class PiecePreview(tk.Canvas):
             self.create_oval(x - MARK_R, y - MARK_R, x + MARK_R, y + MARK_R, outline=ERROR_MARK, width=2)
             self.create_oval(x - 2, y - 2, x + 2, y + 2, fill=ERROR_MARK, outline=ERROR_MARK)
 
-        # Footer: dimensions (in the row's current unit) + legend
-        dims = row.bbox_text()
+        # Footer: dimensions (in the "Show dimensions in" unit) + legend
+        dims = row.bbox_text(self.dim_units)
         if row.unit not in ("in", "mm"):
             dims += "  (units unknown)"
         fy = h - MARGIN - FOOTER / 2 + 4
@@ -138,6 +146,6 @@ class PiecePreview(tk.Canvas):
             x = x0 - 24
 
     def _center_text(self, text: str, color: str, title: bool = False) -> None:
-        w, h = self.winfo_width(), self.winfo_height()
+        w, h = self._size()
         self.create_text(w / 2, h / 2, text=text, fill=color, justify="center", width=max(60, w - 2 * MARGIN),
                          font=("Segoe UI", 10, "bold" if title else "normal"))
