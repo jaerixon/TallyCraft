@@ -5,6 +5,27 @@ any open questions.
 
 ---
 
+## 2026-09-28 — Session 10: CI actions off Node 20 (no release)
+
+**Done**
+- `release.yml` now uses the Node 24 majors: `actions/checkout@v7`,
+  `actions/setup-python@v7`, `actions/upload-artifact@v7`,
+  `softprops/action-gh-release@v3`. Their release notes list no breaking changes that
+  affect how this workflow uses them.
+- Committed as `277723e` and pushed to main. The workflow was started by hand
+  (Run workflow, main): run #5 **succeeded with no annotations**. v0.5.0's run #4 had
+  shown the "Node.js 20 is deprecated" warning.
+  - Tests, build, exe self-tests, and artifact upload all passed. The tag check and
+    Publish GitHub Release steps were skipped, as usual for a run that isn't from a tag.
+    So `action-gh-release@v3` will first run for real on the next `v*` tag.
+- No release tag: nothing in the app changed.
+- 302 passed, 3 skipped locally (`.venv`).
+
+**Next**
+- Check the Publish step on the next release.
+
+---
+
 ## 2026-09-28 — Session 9: v0.5.0 (packing list polish + Etsy import; released)
 
 **Status: released as v0.5.0** at the user's request, before a real order was available.
