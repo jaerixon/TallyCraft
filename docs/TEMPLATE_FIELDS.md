@@ -1,6 +1,6 @@
 # Packing list template fields
 
-<!-- Generated from src/tallycraft/packing_docx.py (FIELDS). Run `python tools/make_template.py --docs` after changing fields. -->
+<!-- Generated from src/tallycraft/packing_docx.py (FIELDS). Run `python tools/make_field_docs.py` after changing fields. -->
 
 TallyCraft fills a Word template (`templates/packing_list_template.docx`) using [docxtpl](https://docxtpl.readthedocs.io/) placeholders. Edit the template in Word; keep the placeholders (including their `{{ }}` / `{% %}` brackets) intact.
 
@@ -34,7 +34,7 @@ TallyCraft fills a Word template (`templates/packing_list_template.docx`) using 
 
 | Placeholder | Contains | Example |
 |---|---|---|
-| `{{ total_weight_lb_oz }}` | Total shipping weight in pounds and ounces (measured parts). | 4 lb 14.9 oz |
+| `{{ total_weight_lb_oz }}` | Total shipping weight in whole pounds and ounces, ounces rounded up (measured parts). | 4 lb 15 oz |
 | `{{ total_weight_g }}` | Total shipping weight in grams, 1 decimal, no unit. | 2,237.2 |
 | `{{ unmeasured_count }}` | How many parts couldn't be measured (0 if none). | 1 |
 | `{{ unmeasured_warning }}` | A warning sentence when parts couldn't be measured; empty otherwise. Use with {%p if unmeasured_warning %} … {%p endif %}. | WARNING: Total weight excludes 1 part that could not be measured (marked * below). It still goes in the box. |
@@ -44,11 +44,12 @@ TallyCraft fills a Word template (`templates/packing_list_template.docx`) using 
 | Placeholder | Contains | Example |
 |---|---|---|
 | `{{ parts }}` | The parts table rows. Loop over them with {%tr for p in parts %} … {%tr endfor %}; each p has the p.… fields below. | (list) |
-| `{{ kit_headers }}` | Kit column headings, for the column loop {%tc for h in kit_headers %} {{ h }} {%tc endfor %}. Full kit names, "Kit 1…", or one per package, depending on what fits. | XL Standard Box (1 of 2), XL Standard Box (2 of 2) |
+| `{{ kit_headers }}` | Kit column headings, for the column loop {%tc for h in kit_headers %} {{ h }} {%tc endfor %}. Full kit names, "Kit 1…", or one per package, depending on what fits. Empty when the order is a single kit (only the count column is shown). | XL Standard Box (1 of 2), XL Standard Box (2 of 2) |
+| `{{ count_header }}` | Heading for the count column: "Count" when the order is a single kit, otherwise "Total count". | Total count |
 | `{{ kit_legend }}` | Explains short kit headings ("Kit 1 = …"); empty when full names fit. | Kit columns: Kit 1 = XL Standard Box (1 of 4); … |
 | `{{ kit_totals }}` | Totals-row values for the kit columns (same column loop). | 28, 28, 9 |
 | `{{ total_count }}` | Totals row: all parts across every kit. | 65 |
-| `{{ total_weight_measured }}` | Totals row: total weight in grams, 2 decimals (measured parts). | 12,564.18 |
+| `{{ total_weight_measured }}` | Totals row: total weight in grams, shortened like the part weights (measured parts). | 12,564 |
 | `{{ total_label }}` | Totals row label: "Total", or "Total (measured parts)" when some couldn't be measured. | Total |
 | `{{ footnotes }}` | One per unmeasured part, for {%p for f in footnotes %} … {%p endfor %}; each f has f.marker, f.name, f.reason. | (list) |
 
@@ -71,14 +72,14 @@ TallyCraft fills a Word template (`templates/packing_list_template.docx`) using 
 | Placeholder | Contains | Example |
 |---|---|---|
 | `{{ p.picture }}` | Drawing of the part (cut lines solid, engrave lines light), fitted to the Picture column. | (image) |
-| `{{ p.dimensions }}` | Bounding box size, in the unit chosen in Settings ("Show dimensions in"). | 14.500 × 14.250 in |
+| `{{ p.dimensions }}` | Bounding box size, in the unit chosen in Settings ("Show dimensions in"), at most 3 digits and 2 decimals per number. | 14.5 × 14.3 in |
 | `{{ p.display_name }}` | The name to show: the Display name set in the pieces table, or the file name (without .dxf) if none is set. | Front Panel |
 | `{{ p.name }}` | The file name without .dxf (always, even if a Display name is set). | XL v1 - Main Box - Front Panel v2 - x3 |
 | `{{ p.marker }}` | Footnote marker for unmeasured parts (" *1"); empty otherwise. |  *1 |
 | `{{ p.counts }}` | This part's count in each kit column, for {%tc for c in p.counts %} {{ c }} {%tc endfor %}; "—" if a kit doesn't use it. | 2, 2, — |
 | `{{ p.total_count }}` | Count across every kit in the order. | 4 |
-| `{{ p.weight_per_piece }}` | Grams per piece, 2 decimals; "—" if unmeasured. | 423.64 |
-| `{{ p.total_weight }}` | Grams for all of this part, 2 decimals; "—" if unmeasured. | 1,694.58 |
+| `{{ p.weight_per_piece }}` | Grams per piece: at most 3 digits and 2 decimals (6.27, 20.1, 280); whole grams from 1,000 g up; "—" if unmeasured. | 424 |
+| `{{ p.total_weight }}` | Grams for all of this part, shortened the same way; "—" if unmeasured. | 1,695 |
 | `{{ p.skipped }}` | True if the part couldn't be measured. | False |
 | `{{ p.reason }}` | Why it couldn't be measured; empty otherwise. | The outline has a gap… |
 

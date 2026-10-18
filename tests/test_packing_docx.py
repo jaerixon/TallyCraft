@@ -65,11 +65,12 @@ def test_fill_multi_kit_order(order, tmp_path):
     for expected in ("Jordan Rivera", "3141592", "2026-09-27", "2x XL Standard Box, 1x XL Tunnel + Ramp",
                      "Bun Homes Co.", "Thanks!", "Etsy order #3141592", "Shop record — Calibration: control sample"):
         assert expected in text, expected
-    assert plan["mode"] == "full"
+    assert plan["mode"] == "short"  # the starter template's kit column is too narrow for full names
+    assert "Kit columns: Kit 1 = XL Standard Box (1 of 2); Kit 2 = XL Standard Box (2 of 2)" in text
     t = parts_table(out)
     header = [c.text for c in t.rows[0].cells]
     assert header[:2] == ["Picture", "Part"]
-    assert header[2:5] == ["XL Standard Box (1 of 2)", "XL Standard Box (2 of 2)", "XL Tunnel + Ramp"]
+    assert header[2:5] == ["Kit 1", "Kit 2", "Kit 3"]
     assert header[5:] == ["Total count", "Weight per piece (g)", "Total weight (g)", "Done"]
     # header + one row per part (side, floor, gap) + totals row
     rows = table_rows(out)
@@ -85,10 +86,16 @@ def test_single_kit_order(order, tmp_path):
     for iid in order.packages[0].order[:2]:
         add(single.packages[0], order.packages[0].rows[iid])
     out, plan = fill(make_record(single), tmp_path)
+    assert plan["mode"] == "single"
     header = [c.text for c in parts_table(out).rows[0].cells]
-    assert header == ["Picture", "Part", "XL Standard Box", "Total count", "Weight per piece (g)",
-                      "Total weight (g)", "Done"]
-    assert "WARNING" not in docx_text(out)  # {%p if unmeasured_warning %} removed the paragraph
+    # one kit: no "Kit 1" column next to a "Total count" column, just "Count"
+    assert header == ["Picture", "Part", "Count", "Weight per piece (g)", "Total weight (g)", "Done"]
+    rows = table_rows(out)
+    assert all(len(r.cells) == 6 for r in rows)
+    assert rows[1].cells[2].text == "2"
+    text = docx_text(out)
+    assert "WARNING" not in text  # {%p if unmeasured_warning %} removed the paragraph
+    assert "Kit columns" not in text
 
 
 def test_column_widths_follow_the_template(order, tmp_path):
@@ -144,7 +151,7 @@ def test_unmeasured_parts(order, tmp_path):
 
 @pytest.mark.parametrize("qty_a, qty_b, mode, first_header", [
     (4, 4, "short", "Kit 1"),
-    (15, 0, "per_package", "XL Standard Box (each of 15)"),
+    (15, 0, "per_package", "Kit 1"),  # "Kit 1 = XL Standard Box (each of 15)" in the legend
 ])
 def test_many_kits(order, tmp_path, qty_a, qty_b, mode, first_header):
     order.packages[0].quantity = qty_a
@@ -444,13 +451,13 @@ def test_display_name_on_packing_list(order, tmp_path):
 
 
 @pytest.mark.parametrize("unit, show, expected", [
-    ("in", "in", "4.000 × 2.000 in"),
-    ("in", "mm", "101.6 × 50.8 mm"),
-    ("mm", "in", "3.937 × 1.969 in"),
-    ("mm", "mm", "100.0 × 50.0 mm"),
-    ("mm", "file", "100.0 × 50.0 mm"),
-    ("in", "file", "4.000 × 2.000 in"),
-    (None, "in", "4.000 × 2.000"),  # unknown units can't be converted
+    ("in", "in", "4 × 2 in"),
+    ("in", "mm", "102 × 50.8 mm"),
+    ("mm", "in", "3.94 × 1.97 in"),
+    ("mm", "mm", "100 × 50 mm"),
+    ("mm", "file", "100 × 50 mm"),
+    ("in", "file", "4 × 2 in"),
+    (None, "in", "4 × 2"),  # unknown units can't be converted
 ])
 def test_dimension_units(unit, show, expected):
     from tallycraft.packing_docx import _dims
@@ -462,7 +469,7 @@ def test_dimension_units_setting_reaches_the_document(order, tmp_path):
     rec = make_record(order)
     out = tmp_path / "mm.docx"
     render_docx(rec, TEMPLATE, out, tmp_path / "work", "mm")
-    assert "101.6 × 50.8 mm" in docx_text(out)
+    assert "102 × 50.8 mm" in docx_text(out)
 
 
 def test_dimension_units_setting_is_sanitized(tmp_path):
@@ -470,3 +477,98 @@ def test_dimension_units_setting_is_sanitized(tmp_path):
     s.ensure_folders()
     s.settings_path.write_text('{"dimension_units": "furlongs"}', encoding="utf-8")
     assert s.load_settings()[0]["dimension_units"] == "in"
+
+
+# ---------------------------------------------------------------- v0.6: numbers, single kit, pictures
+
+@pytest.mark.parametrize("value, text", [
+    (280.19, "280"), (6.27, "6.27"), (0.78, "0.78"), (20.13, "20.1"), (204.85, "205"), (268.40, "268"),
+    (14.5, "14.5"), (14.25, "14.3"), (0.734, "0.73"), (0.735, "0.74"), (13.661, "13.7"), (8.125, "8.13"),
+    (9.996, "10"), (999.6, "1,000"), (1694.58, "1,695"), (12564.18, "12,564"), (0, "0"), (0.004, "<0.01"),
+])
+def test_short_number(value, text):
+    from tallycraft.packing_docx import short_number
+    assert short_number(value) == text
+
+
+def test_numbers_on_the_packing_list(order):
+    rec = make_record(order)
+    rec["results"]["total_g"] = 5149.2
+    plan = {"mode": "full", "headers": [], "indices": [], "legend": []}
+    ctx = build_context(rec, plan)
+    assert ctx["total_weight_lb_oz"] == "11 lb 6 oz"  # 11 lb 5.6 oz: whole ounces, rounded up
+    assert ctx["total_weight_measured"] == "5,149 *"  # one part is unmeasured
+    assert ctx["count_header"] == "Total count"
+    side = next(p for p in ctx["parts"] if p["name"] == "side")
+    line = next(l for l in rec["results"]["lines"] if l["name"] == "side.dxf")
+    from tallycraft.packing_docx import short_number
+    assert side["weight_per_piece"] == short_number(line["weight_per_piece_g"])
+    assert side["total_weight"] == short_number(line["item_total_g"])
+    assert build_context(rec, {**plan, "mode": "single"})["count_header"] == "Count"
+
+
+def test_single_kit_plan():
+    plan = plan_kit_columns(["XL Standard Box"], [{"name": "XL Standard Box", "quantity": 1}], DEFAULT_GEOMETRY)
+    assert plan["mode"] == "single" and plan["headers"] == [] and plan["indices"] == [] and plan["legend"] == []
+    assert plan_kit_columns(["A (1 of 2)", "A (2 of 2)"], None, DEFAULT_GEOMETRY)["mode"] != "single"
+
+
+def test_starter_template_fields():
+    from docxtpl import DocxTemplate
+    from tallycraft.packing_docx import _template_text
+    tpl = DocxTemplate(str(TEMPLATE))
+    tpl.init_docx()
+    text = _template_text(tpl)
+    assert "{{ p.display_name }}" in text and "{{ p.name }}" not in text  # Display name when set
+    assert "{{ count_header }}" in text
+    assert "total_weight_g" not in text  # pounds and ounces only
+
+
+def test_pictures_fit_inside_their_cell_and_are_centred(order, tmp_path):
+    out, _plan = fill(make_record(order), tmp_path)
+    geo = read_table_geometry(TEMPLATE)
+    room = geo.before[0] - geo.picture_margins
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    import re
+    inlines = re.findall(r"<wp:inline[^>]*>.*?<wp:extent cx=\"(\d+)\"", xml)
+    assert inlines
+    for cx in inlines:
+        assert int(cx) / 914400 <= room  # wider than the cell's text area: Word pushes it off centre
+    for tag in re.findall(r"<wp:inline[^>]*>", xml):  # LibreOffice adds left spacing unless it's 0
+        assert all(f'{side}="0"' in tag for side in ("distT", "distB", "distL", "distR"))
+
+
+def test_picture_margins_come_from_the_table_style():
+    from tallycraft.packing_docx import _picture_margins, _find_parts_table
+    doc = Document(str(TEMPLATE))
+    assert _picture_margins(doc, _find_parts_table(doc)) == pytest.approx(2 * 108 / 1440)  # Word's default
+
+
+def test_picture_background_is_transparent(tmp_path):
+    path = tmp_path / "p.png"
+    render_picture_png({"loops": [[[0, 0], [10, 0], [10, 10], [0, 10]]], "depths": [0], "open": [], "engrave": [],
+                        "bbox": [10, 10]}, path, width_in=0.8)
+    with Image.open(path) as im:
+        assert im.mode == "RGBA"
+        assert im.getpixel((0, 0))[3] == 0  # striped rows show through
+        assert im.getchannel("A").getextrema()[1] == 255  # the outline is solid
+
+
+@pytest.mark.parametrize("nparts, shaded", [(3, True), (2, False)])
+def test_moved_part_row_keeps_its_stripe(order, tmp_path, nparts, shaded):
+    """The last part row moves into the totals table; the parts table's row stripes
+    (1st, 3rd, … part shaded) must carry on there."""
+    from tallycraft.packing_docx import _band_fill
+    rec = make_record(order)
+    rec["results"]["lines"] = rec["results"]["lines"][:nparts]
+    out, _plan = fill(rec, tmp_path)
+    doc = Document(str(out))
+    t = parts_table(out)
+    fill_color = _band_fill(doc, t._tbl)
+    assert fill_color  # the starter template stripes its rows
+    moved = t.rows[-1].cells[0].tables[0].rows[0]._tr
+    fills = {tc.find(f"{qn('w:tcPr')}/{qn('w:shd')}").get(qn("w:fill"))
+             if tc.find(f"{qn('w:tcPr')}/{qn('w:shd')}") is not None else None for tc in moved.findall(qn("w:tc"))}
+    assert fills == ({fill_color} if shaded else {None})
+

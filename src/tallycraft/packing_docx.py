@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .calc import format_lb_oz
+from .calc import format_lb_oz_whole
 from .packing import calibration_text, decode_logo, part_name, stamp
 
 PARTS_TABLE_ALT_TEXT = "TallyCraft parts table"
@@ -61,8 +61,8 @@ FIELDS: list[Field] = [
     Field("footer_reference", "For the page footer: \"Etsy order #…\", or \"Packing list — <customer>\" if there's "
                               "no order number.", "Etsy order #3141592653"),
     # weight
-    Field("total_weight_lb_oz", "Total shipping weight in pounds and ounces (measured parts).", "4 lb 14.9 oz",
-          "Weight"),
+    Field("total_weight_lb_oz", "Total shipping weight in whole pounds and ounces, ounces rounded up "
+                                "(measured parts).", "4 lb 15 oz", "Weight"),
     Field("total_weight_g", "Total shipping weight in grams, 1 decimal, no unit.", "2,237.2", "Weight"),
     Field("unmeasured_count", "How many parts couldn't be measured (0 if none).", "1", "Weight"),
     Field("unmeasured_warning", "A warning sentence when parts couldn't be measured; empty otherwise. Use with "
@@ -73,14 +73,17 @@ FIELDS: list[Field] = [
     Field("parts", "The parts table rows. Loop over them with {%tr for p in parts %} … {%tr endfor %}; each p has "
                    "the p.… fields below.", "(list)", "Parts table"),
     Field("kit_headers", "Kit column headings, for the column loop {%tc for h in kit_headers %} {{ h }} "
-                         "{%tc endfor %}. Full kit names, \"Kit 1…\", or one per package, depending on what fits.",
+                         "{%tc endfor %}. Full kit names, \"Kit 1…\", or one per package, depending on what fits. "
+                         "Empty when the order is a single kit (only the count column is shown).",
           "XL Standard Box (1 of 2), XL Standard Box (2 of 2)", "Parts table"),
+    Field("count_header", "Heading for the count column: \"Count\" when the order is a single kit, otherwise "
+                          "\"Total count\".", "Total count", "Parts table"),
     Field("kit_legend", "Explains short kit headings (\"Kit 1 = …\"); empty when full names fit.",
           "Kit columns: Kit 1 = XL Standard Box (1 of 4); …", "Parts table"),
     Field("kit_totals", "Totals-row values for the kit columns (same column loop).", "28, 28, 9", "Parts table"),
     Field("total_count", "Totals row: all parts across every kit.", "65", "Parts table"),
-    Field("total_weight_measured", "Totals row: total weight in grams, 2 decimals (measured parts).", "12,564.18",
-          "Parts table"),
+    Field("total_weight_measured", "Totals row: total weight in grams, shortened like the part weights "
+                                   "(measured parts).", "12,564", "Parts table"),
     Field("total_label", "Totals row label: \"Total\", or \"Total (measured parts)\" when some couldn't be "
                          "measured.", "Total", "Parts table"),
     Field("footnotes", "One per unmeasured part, for {%p for f in footnotes %} … {%p endfor %}; each f has "
@@ -104,8 +107,8 @@ FIELDS: list[Field] = [
 PART_FIELDS: list[Field] = [
     Field("picture", "Drawing of the part (cut lines solid, engrave lines light), fitted to the Picture column.",
           "(image)", "Each part (p.…)"),
-    Field("dimensions", "Bounding box size, in the unit chosen in Settings (\"Show dimensions in\").",
-          "14.500 × 14.250 in", "Each part (p.…)"),
+    Field("dimensions", "Bounding box size, in the unit chosen in Settings (\"Show dimensions in\"), at most "
+                        "3 digits and 2 decimals per number.", "14.5 × 14.3 in", "Each part (p.…)"),
     Field("display_name", "The name to show: the Display name set in the pieces table, or the file name "
                           "(without .dxf) if none is set.", "Front Panel", "Each part (p.…)"),
     Field("name", "The file name without .dxf (always, even if a Display name is set).",
@@ -114,8 +117,9 @@ PART_FIELDS: list[Field] = [
     Field("counts", "This part's count in each kit column, for {%tc for c in p.counts %} {{ c }} {%tc endfor %}; "
                     "\"—\" if a kit doesn't use it.", "2, 2, —", "Each part (p.…)"),
     Field("total_count", "Count across every kit in the order.", "4", "Each part (p.…)"),
-    Field("weight_per_piece", "Grams per piece, 2 decimals; \"—\" if unmeasured.", "423.64", "Each part (p.…)"),
-    Field("total_weight", "Grams for all of this part, 2 decimals; \"—\" if unmeasured.", "1,694.58",
+    Field("weight_per_piece", "Grams per piece: at most 3 digits and 2 decimals (6.27, 20.1, 280); whole grams "
+                              "from 1,000 g up; \"—\" if unmeasured.", "424", "Each part (p.…)"),
+    Field("total_weight", "Grams for all of this part, shortened the same way; \"—\" if unmeasured.", "1,695",
           "Each part (p.…)"),
     Field("skipped", "True if the part couldn't be measured.", "False", "Each part (p.…)"),
     Field("reason", "Why it couldn't be measured; empty otherwise.", "The outline has a gap…", "Each part (p.…)"),
@@ -138,8 +142,8 @@ REQUIRED_HELP = ("The parts table loop ({%tr for p in parts %} … {%tr endfor %
 def field_reference_markdown() -> str:
     """docs/TEMPLATE_FIELDS.md — generated from FIELDS (tests check it's up to date)."""
     out = ["# Packing list template fields", "",
-           "<!-- Generated from src/tallycraft/packing_docx.py (FIELDS). Run `python tools/make_template.py "
-           "--docs` after changing fields. -->", "",
+           "<!-- Generated from src/tallycraft/packing_docx.py (FIELDS). Run `python tools/make_field_docs.py` "
+           "after changing fields. -->", "",
            "TallyCraft fills a Word template (`templates/packing_list_template.docx`) using "
            "[docxtpl](https://docxtpl.readthedocs.io/) placeholders. Edit the template in Word; keep the "
            "placeholders (including their `{{ }}` / `{% %}` brackets) intact.", "",
@@ -192,12 +196,13 @@ def field_reference_text(width: int = 76) -> str:
 def render_picture_png(picture: dict, path: Path, width_in: float, height_in: float = PICTURE_HEIGHT_IN,
                        dpi: int = PICTURE_DPI) -> None:
     """Draw a part picture: cut outline solid black, holes thinner, engrave light
-    grey, unclosed runs dashed. Scaled to fit its own box."""
+    grey, unclosed runs dashed. Scaled to fit its own box, on a transparent
+    background so shaded table rows show through."""
     from PIL import Image, ImageDraw
 
     W, H = max(1, round(width_in * dpi)), max(1, round(height_in * dpi))
     S = SUPERSAMPLE
-    img = Image.new("RGB", (W * S, H * S), "white")
+    img = Image.new("RGBA", (W * S, H * S), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
     loops = picture.get("loops") or []
     opens = picture.get("open") or []
@@ -251,6 +256,7 @@ class TableGeometry:
     after: list[float]  # columns after {%tc endfor %} (Total count, weights, checkbox)
     name_index: int  # which "before" column is the flexible part-name column
     found: bool = True
+    picture_margins: float = 2 * 108 / 1440  # left + right cell margins of the Picture column (Word's default)
 
 
 DEFAULT_GEOMETRY = TableGeometry(7.5, [0.95, 2.0], 0.85, [0.6, 0.75, 0.8, 0.45], name_index=1, found=False)
@@ -282,7 +288,34 @@ def read_table_geometry(template_path) -> TableGeometry:
     before, after = widths[:start], widths[end + 1:]
     kit = sum(widths[start + 1:end]) or DEFAULT_GEOMETRY.kit
     name_index = max(range(len(before)), key=lambda i: before[i]) if before else 0
-    return TableGeometry(content, before, kit, after, name_index)
+    return TableGeometry(content, before, kit, after, name_index, picture_margins=_picture_margins(doc, tbl))
+
+
+def _picture_margins(doc, tbl) -> float:
+    """Left + right margins (inches) of the Picture cell in the part row: the cell's own,
+    else the table's, else its table style's, else Word's default (0.075 in each side)."""
+    from docx.oxml.ns import qn
+    W = qn("w:w")
+
+    def side(mar, name):
+        el = mar.find(qn(f"w:{name}")) if mar is not None else None
+        if el is None:
+            el = mar.find(qn("w:start" if name == "left" else "w:end")) if mar is not None else None
+        return int(el.get(W)) if el is not None and el.get(W, "").isdigit() else None
+
+    pic_tc = next((tr.find(qn("w:tc")) for tr in tbl._tbl.findall(qn("w:tr"))
+                   if "p.picture" in _cell_text(tr)), None)
+    sources = [pic_tc.find(f"{qn('w:tcPr')}/{qn('w:tcMar')}") if pic_tc is not None else None,
+               tbl._tbl.find(f"{qn('w:tblPr')}/{qn('w:tblCellMar')}")]
+    style = tbl._tbl.find(f"{qn('w:tblPr')}/{qn('w:tblStyle')}")
+    if style is not None:
+        for st in doc.styles.element.findall(qn("w:style")):
+            if st.get(qn("w:styleId")) == style.get(qn("w:val")):
+                sources.append(st.find(f"{qn('w:tblPr')}/{qn('w:tblCellMar')}"))
+    total = 0
+    for name in ("left", "right"):
+        total += next((v for v in (side(m, name) for m in sources) if v is not None), 108)
+    return total / 1440
 
 
 def _find_parts_table(doc, alt_text: str = PARTS_TABLE_ALT_TEXT):
@@ -316,7 +349,7 @@ def plan_kit_columns(kit_labels: list[str], packages: list[dict] | None, geo: Ta
                      header_pt: float = 8.0, name_min_in: float = 1.2) -> dict:
     """How kit columns fit on a portrait page, using the template's real widths.
 
-    Returns {"mode": "full" | "short" | "per_package" | "omitted", "headers", "legend",
+    Returns {"mode": "single" | "full" | "short" | "per_package" | "omitted", "headers", "legend",
     "indices" (kit_counts index per column), "kit_width", "name_width"} (widths in inches).
     """
     fixed = sum(geo.before) - geo.before[geo.name_index] + sum(geo.after) if geo.before else sum(geo.after)
@@ -343,6 +376,8 @@ def plan_kit_columns(kit_labels: list[str], packages: list[dict] | None, geo: Ta
         return None
 
     n = len(kit_labels)
+    if n <= 1:  # one kit: its count is the total, so only the count column ("Count") is shown
+        return {"mode": "single", "headers": [], "kit_width": 0.0, "name_width": room, "legend": [], "indices": []}
     plan = fit(kit_labels)
     if plan:
         plan["legend"] = list(zip(plan["headers"], kit_labels)) if plan["mode"] == "short" else []
@@ -366,8 +401,22 @@ def plan_kit_columns(kit_labels: list[str], packages: list[dict] | None, geo: Ta
 
 # ============================================================================ context
 
-def _g(v, decimals=2) -> str:
-    return "—" if v is None else f"{v:,.{decimals}f}"
+def short_number(v: float) -> str:
+    """At most 3 digits (a leading 0 counts) and at most 2 decimals, half rounded up, trailing
+    zeros dropped: 280.19 -> "280", 6.27 -> "6.27", 20.13 -> "20.1", 0.734 -> "0.73",
+    14.5 -> "14.5". From 1,000 up, whole numbers: 1694.58 -> "1,695"."""
+    from decimal import ROUND_HALF_UP, Decimal
+    d = Decimal(str(v))
+    decimals = max(0, min(2, 3 - len(str(int(abs(d))))))
+    d = d.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+    if d == 0 and v != 0:
+        return "<0.01" if v > 0 else "0"
+    text = f"{d:,.{decimals}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _g(v) -> str:
+    return "—" if v is None else short_number(v)
 
 
 DIMENSION_UNITS = {"in": "Inches", "mm": "Millimeters", "file": "Each file's own units"}
@@ -381,10 +430,10 @@ def _dims(line: dict, show: str = "in") -> str:
         return ""
     unit = line.get("unit")
     if unit not in MM_PER:  # unknown units: can't convert, show the file's numbers
-        return f"{bb[0]:.3f} × {bb[1]:.3f}"
+        return f"{short_number(bb[0])} × {short_number(bb[1])}"
     target = unit if show not in MM_PER else show
     w, h = (v * MM_PER[unit] / MM_PER[target] for v in bb)
-    return f"{w:.3f} × {h:.3f} in" if target == "in" else f"{w:.1f} × {h:.1f} mm"
+    return f"{short_number(w)} × {short_number(h)} {target}"
 
 
 def build_context(record: dict, plan: dict, picture=lambda line: "", logo="", dim_units: str = "in") -> dict:
@@ -439,7 +488,7 @@ def build_context(record: dict, plan: dict, picture=lambda line: "", logo="", di
         "items_ordered": record["order"].get("items_ordered", ""),
         "note_to_customer": cust.get("note", "") or "",
         "footer_reference": f"Etsy order #{order_no}" if order_no else f"Packing list — {cust.get('name', '')}",
-        "total_weight_lb_oz": format_lb_oz(total),
+        "total_weight_lb_oz": format_lb_oz_whole(total),
         "total_weight_g": f"{total:,.1f}",
         "unmeasured_count": skipped_n,
         "unmeasured_warning": (f"WARNING: Total weight excludes {skipped_n} part{'s' if skipped_n != 1 else ''} "
@@ -449,8 +498,9 @@ def build_context(record: dict, plan: dict, picture=lambda line: "", logo="", di
         "kit_headers": plan["headers"],
         "kit_legend": legend,
         "kit_totals": [str(t) for t in kit_totals],
+        "count_header": "Count" if plan["mode"] == "single" else "Total count",
         "total_count": str(sum(int(l.get("total_count") or 0) for l in res["lines"])),
-        "total_weight_measured": f"{total:,.2f}" + (" *" if skipped_n else ""),
+        "total_weight_measured": short_number(total) + (" *" if skipped_n else ""),
         "total_label": "Total (measured parts)" if skipped_n else "Total",
         "footnotes": footnotes,
         "calibration_method": "Reference piece" if cal.get("method") == "reference" else "Control sample",
@@ -477,7 +527,9 @@ def render_docx(record: dict, template_path, out_path, work_dir, dim_units: str 
     geo = read_table_geometry(template_path)
     plan = plan_kit_columns(record["results"].get("kit_labels") or [], record["order"].get("packages") or [], geo)
     tpl = DocxTemplate(str(template_path))
-    pic_w = (geo.before[0] if geo.found and geo.before else DEFAULT_GEOMETRY.before[0]) - 0.14
+    # The picture must fit inside the cell margins, or Word pushes it off-centre to the right.
+    pic_w = ((geo.before[0] if geo.found and geo.before else DEFAULT_GEOMETRY.before[0])
+             - geo.picture_margins - 0.03)
 
     def picture(line):
         if not (line.get("picture") or {}).get("bbox") and not (line.get("picture") or {}).get("loops"):
@@ -508,29 +560,39 @@ def render_docx(record: dict, template_path, out_path, work_dir, dim_units: str 
     tpl.render(ctx, autoescape=True)
     tpl.save(str(out_path))
     _apply_column_widths(out_path, geo, plan)
-    _repair_empty_cells(out_path)
+    _repair_xml(out_path)
     return plan
 
 
-def _repair_empty_cells(docx_path) -> None:
-    """Word refuses a document ("The file appears to be corrupted") if any table
-    cell has no paragraph, which happens when {%p if %} removes everything in a
-    cell (e.g. no order number and no order date). Give such cells an empty one."""
+def _repair_xml(docx_path) -> None:
+    """Two fixes docxtpl's output needs:
+    - Word refuses a document ("The file appears to be corrupted") if any table
+      cell has no paragraph, which happens when {%p if %} removes everything in a
+      cell (e.g. no order number and no order date). Give such cells an empty one.
+    - docxtpl's pictures have no text-spacing attributes, and LibreOffice then
+      adds spacing on their left, pushing centred pictures to the right. Set it to 0."""
     import zipfile
     from lxml import etree
     W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
     src = Path(docx_path)
     with zipfile.ZipFile(src) as z:
         items = [(info, z.read(info.filename)) for info in z.infolist()]
     changed = False
     out = []
     for info, data in items:
-        if info.filename.startswith("word/") and info.filename.endswith(".xml") and b"<w:tc" in data:
+        if info.filename.startswith("word/") and info.filename.endswith(".xml") and (
+                b"<w:tc" in data or b"<wp:inline" in data):
             root = etree.fromstring(data)
             for tc in root.iter(f"{{{W}}}tc"):
                 if tc.find(f"{{{W}}}p") is None:
                     tc.append(etree.SubElement(tc, f"{{{W}}}p"))
                     changed = True
+            for inline in root.iter(f"{{{WP}}}inline"):
+                for side in ("distT", "distB", "distL", "distR"):
+                    if inline.get(side) is None:
+                        inline.set(side, "0")
+                        changed = True
             data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
         out.append((info, data))
     if not changed:
@@ -561,7 +623,7 @@ def _apply_column_widths(docx_path, geo: TableGeometry, plan: dict) -> None:
     tables = [tbl]
     totals = _find_parts_table(doc, TOTALS_TABLE_ALT_TEXT)
     if totals is not None:
-        _move_last_part_row(tbl._tbl, totals._tbl, len(twips))
+        _move_last_part_row(tbl._tbl, totals._tbl, len(twips), _band_fill(doc, tbl._tbl))
         tables.append(totals)
     for t in tables:
         _set_widths(t._tbl, twips)
@@ -591,10 +653,14 @@ def _full_width_rows(tbl, ncols: int) -> None:
             grid.append(OxmlElement("w:gridCol"))
 
 
-def _move_last_part_row(parts, totals, ncols: int) -> None:
+def _move_last_part_row(parts, totals, ncols: int, band_fill: str | None = None) -> None:
     """Move the last part row into the totals table (which sits in the parts table's
     unsplittable last row), so at least one part always goes to the next page with
-    the totals and sign-off instead of them starting a page alone."""
+    the totals and sign-off instead of them starting a page alone.
+
+    band_fill: the parts table's banded-row shading, if it has one. The moved row
+    gets it written on its cells when it was a shaded row, so the stripes continue."""
+    from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     end_row = next((tr for tr in parts.findall(qn("w:tr")) if totals in tr.iter(qn("w:tbl"))), None)
     prev = end_row.getprevious() if end_row is not None else None
@@ -602,7 +668,46 @@ def _move_last_part_row(parts, totals, ncols: int) -> None:
     if (prev is None or prev.tag != qn("w:tr") or first is None or len(prev.findall(qn("w:tc"))) != ncols
             or prev.find(f"{qn('w:trPr')}/{qn('w:tblHeader')}") is not None):
         return
+    if band_fill:
+        rows = parts.findall(qn("w:tr"))
+        look = parts.find(f"{qn('w:tblPr')}/{qn('w:tblLook')}")
+        skip = 1 if look is not None and look.get(qn("w:firstRow")) in ("1", "true", "on") else 0
+        if (rows.index(prev) - skip) % 2 == 0:  # the 1st, 3rd, … body row is shaded
+            for tc in prev.findall(qn("w:tc")):
+                pr = tc.find(qn("w:tcPr"))
+                if pr is None:
+                    pr = OxmlElement("w:tcPr")
+                    tc.insert(0, pr)
+                if pr.find(qn("w:shd")) is None:
+                    shd = OxmlElement("w:shd")
+                    for k, v in (("w:val", "clear"), ("w:color", "auto"), ("w:fill", band_fill)):
+                        shd.set(qn(k), v)
+                    later = [qn(f"w:{n}") for n in ("noWrap", "tcMar", "textDirection", "tcFitText", "vAlign",
+                                                     "hideMark")]
+                    anchor = next((c for c in pr if c.tag in later), None)
+                    if anchor is not None:
+                        anchor.addprevious(shd)
+                    else:
+                        pr.append(shd)
     first.addprevious(prev)
+
+
+def _band_fill(doc, tbl) -> str | None:
+    """The fill colour of the table style's shaded (odd) rows, if row banding is on."""
+    from docx.oxml.ns import qn
+    pr = tbl.find(qn("w:tblPr"))
+    look = pr.find(qn("w:tblLook")) if pr is not None else None
+    style = pr.find(qn("w:tblStyle")) if pr is not None else None
+    if style is None or look is None or look.get(qn("w:noHBand")) in ("1", "true", "on"):
+        return None
+    for st in doc.styles.element.findall(qn("w:style")):
+        if st.get(qn("w:styleId")) == style.get(qn("w:val")):
+            for cond in st.findall(qn("w:tblStylePr")):
+                if cond.get(qn("w:type")) == "band1Horz":
+                    shd = cond.find(f"{qn('w:tcPr')}/{qn('w:shd')}")
+                    fill = shd.get(qn("w:fill")) if shd is not None else None
+                    return fill if fill and fill != "auto" else None
+    return None
 
 
 def _set_widths(tbl, twips: list[int]) -> None:

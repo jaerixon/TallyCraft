@@ -269,10 +269,13 @@ PACKING LISTS
 
   The packing list shows:
     * your shop name and logo, and the customer and order details
-    * the items ordered and the TOTAL SHIPPING WEIGHT (lb/oz and grams)
-    * every part, with a drawing (cut lines solid, engraving lighter) and its
-      size, the count for each kit, the weights, and a box to tick as you
-      pack it
+    * the items ordered and the TOTAL SHIPPING WEIGHT in whole pounds and
+      ounces, rounded up (5.1 oz becomes 6 oz)
+    * every part (its Display name if set, otherwise the file name), with a
+      drawing (cut lines solid, engraving lighter) and its size, the count
+      for each kit (just one "Count" column for a single package), the
+      weights, and a box to tick as you pack it. Weights and sizes show at
+      most 3 digits and 2 decimals (280 g, 6.27 g, 14.5 in)
     * a "Packed by / Date" line and your note to the customer
     * in small print at the bottom, how the weight was worked out (for your
       records)
@@ -321,6 +324,7 @@ CHANGING HOW THE PACKING LIST LOOKS (WORD TEMPLATE)
   Your edited template is never replaced when TallyCraft is updated. A clean
   copy is kept in templates\_default\. File > Settings... > "Restore default
   template" makes a fresh copy under a new name; your file isn't touched.
+  (Updating from 0.5 or earlier: use it to get the 0.6 packing list design.)
   Settings can also point TallyCraft at a different template file.
 
   Help > Packing List Template Fields lists every placeholder. So does
@@ -378,8 +382,9 @@ ORDER AND CUSTOMER
 WEIGHT
 ------
   {{ total_weight_lb_oz }}
-      Total shipping weight in pounds and ounces (measured parts).
-      e.g. 4 lb 14.9 oz
+      Total shipping weight in whole pounds and ounces, ounces rounded up
+      (measured parts).
+      e.g. 4 lb 15 oz
   {{ total_weight_g }}
       Total shipping weight in grams, 1 decimal, no unit.
       e.g. 2,237.2
@@ -400,8 +405,13 @@ PARTS TABLE
   {{ kit_headers }}
       Kit column headings, for the column loop {%tc for h in kit_headers %}
       {{ h }} {%tc endfor %}. Full kit names, "Kit 1…", or one per package,
-      depending on what fits.
+      depending on what fits. Empty when the order is a single kit (only the
+      count column is shown).
       e.g. XL Standard Box (1 of 2), XL Standard Box (2 of 2)
+  {{ count_header }}
+      Heading for the count column: "Count" when the order is a single kit,
+      otherwise "Total count".
+      e.g. Total count
   {{ kit_legend }}
       Explains short kit headings ("Kit 1 = …"); empty when full names fit.
       e.g. Kit columns: Kit 1 = XL Standard Box (1 of 4); …
@@ -412,8 +422,9 @@ PARTS TABLE
       Totals row: all parts across every kit.
       e.g. 65
   {{ total_weight_measured }}
-      Totals row: total weight in grams, 2 decimals (measured parts).
-      e.g. 12,564.18
+      Totals row: total weight in grams, shortened like the part weights
+      (measured parts).
+      e.g. 12,564
   {{ total_label }}
       Totals row label: "Total", or "Total (measured parts)" when some
       couldn't be measured.
@@ -462,8 +473,8 @@ EACH PART (P.…)
       e.g. (image)
   {{ p.dimensions }}
       Bounding box size, in the unit chosen in Settings ("Show dimensions
-      in").
-      e.g. 14.500 × 14.250 in
+      in"), at most 3 digits and 2 decimals per number.
+      e.g. 14.5 × 14.3 in
   {{ p.display_name }}
       The name to show: the Display name set in the pieces table, or the
       file name (without .dxf) if none is set.
@@ -482,11 +493,12 @@ EACH PART (P.…)
       Count across every kit in the order.
       e.g. 4
   {{ p.weight_per_piece }}
-      Grams per piece, 2 decimals; "—" if unmeasured.
-      e.g. 423.64
+      Grams per piece: at most 3 digits and 2 decimals (6.27, 20.1, 280);
+      whole grams from 1,000 g up; "—" if unmeasured.
+      e.g. 424
   {{ p.total_weight }}
-      Grams for all of this part, 2 decimals; "—" if unmeasured.
-      e.g. 1,694.58
+      Grams for all of this part, shortened the same way; "—" if unmeasured.
+      e.g. 1,695
   {{ p.skipped }}
       True if the part couldn't be measured.
       e.g. False

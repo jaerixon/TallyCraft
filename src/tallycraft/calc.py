@@ -177,3 +177,10 @@ def grams_to_lb_oz(grams: float, oz_decimals: int = 1) -> tuple[int, float]:
 def format_lb_oz(grams: float) -> str:
     lb, oz = grams_to_lb_oz(grams)
     return f"{lb} lb {oz:.1f} oz"
+
+
+def format_lb_oz_whole(grams: float) -> str:
+    """Whole pounds and ounces, ounces always rounded up (5.1 oz -> 6 oz), for shipping labels."""
+    total_oz = math.ceil(grams / GRAMS_PER_OUNCE - 1e-9) if grams > 0 else 0  # 1e-9: float noise, not a real ounce
+    lb, oz = divmod(total_oz, 16)
+    return f"{lb} lb {oz} oz"

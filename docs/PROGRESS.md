@@ -5,6 +5,69 @@ any open questions.
 
 ---
 
+## 2026-10-18 — Session 11: v0.6.0 (the user's packing list design + number formatting)
+
+**Decisions made with the user**
+- Dimensions use normal rounding (0.734 → 0.73; the "0.74" in the request was a slip).
+- Weights of 1,000 g or more show whole grams (1,694.58 → 1,695), not 3 digits plus zeros.
+- The keep-together sign-off box that the user's design had dropped is rebuilt in their styling.
+- One template covers both cases: a single-kit order gets a single "Count" column via
+  `{{ count_header }}`, so a second template isn't needed.
+
+**Done**
+- **Bundled template** = the user's Word design (`packing_list_template_new.docx` in the
+  repo root, untracked, left in place), converted by the new `tools/adapt_template.py`:
+  - Part shows `{{ p.display_name }}`. Their design used `{{ p.name }}`, which is always
+    the file name, so Display Names never appeared.
+  - Grams are removed from the total box.
+  - The "Total count" heading is now `{{ count_header }}`.
+  - The tag columns are narrowed.
+  - Totals, footnotes, sign-off, note and shop record sit in the unsplittable last row
+    again, and the note box is a one-cell table.
+  - Sign-off runs are explicitly not bold: the table style bolds the first column, and
+    that full-width cell counts as the first column.
+  - "Last modified by" is cleared, because the repo is public.
+  - The note font name "Cutepunch Personal Use Only" really does end in a hidden
+    character (it's in the font file itself); it is left as is.
+- `tools/make_template.py` (the old generator) is now `tools/make_field_docs.py` (docs only),
+  because running the generator would have overwritten the Word design.
+- **Numbers:**
+  - Total shipping weight is whole lb/oz with ounces always rounded up
+    (`calc.format_lb_oz_whole`; 11 lb 5.6 oz → 11 lb 6 oz).
+  - Part weights, the totals row and dimensions show at most 3 digits and 2 decimals
+    (`packing_docx.short_number`).
+  - The app's own tables are unchanged.
+- **Single kit:** plan mode `single` gives no kit columns and the heading "Count".
+- **Pictures centred:**
+  - They were 0.81 in wide in a cell with about 0.80 in of room, so Word pushed them right.
+    The width now subtracts the cell's real margins (cell → table → table style → Word default).
+  - docxtpl's pictures had no `distL/R/T/B`, and LibreOffice then added about 8 pt on the
+    left. The repair pass (`_repair_xml`, formerly `_repair_empty_cells`) sets them to 0.
+  - Picture PNGs are transparent, so the striped rows show through.
+- **Stripes:** the part row moved into the totals table gets the style's stripe colour when
+  it was a shaded row.
+- Checked by rendering in LibreOffice and in Word (hidden): 1 kit × 10 parts, 2 kits ×
+  21 parts, and 3 kits × 10 parts.
+- SPEC §9.2, BUILDING.md, TEMPLATE_FIELDS.md and README.txt are updated. Tests:
+  329 passed, 3 skipped.
+
+- The narrow kit column (0.39 in, was 0.85 in) is kept at the user's request, so multi-kit
+  orders always get "Kit 1, Kit 2…" headings plus the legend.
+- Version 0.6.0; README.txt describes the new numbers and tells updaters to use Restore
+  default template.
+- Released as v0.6.0 at the user's request.
+
+**Next**
+- To use the new template, the user's TallyCraft folder needs Settings > Restore default
+  template after updating, because their edited template is never replaced.
+- First real use: check a real order's packing list printed from Word.
+- Check that the Publish step (`action-gh-release@v3`) ran cleanly on the v0.6.0 tag.
+
+**Open questions**
+- None.
+
+---
+
 ## 2026-09-28 — Session 10: CI actions off Node 20 (no release)
 
 **Done**

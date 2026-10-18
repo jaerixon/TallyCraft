@@ -70,6 +70,15 @@ def test_lb_oz_conversion_and_carry():
     assert format_lb_oz(1000) == "2 lb 3.3 oz"
     assert format_lb_oz(0) == "0 lb 0.0 oz"
 
+
+def test_lb_oz_whole_always_rounds_up():
+    from tallycraft.calc import format_lb_oz_whole
+    assert format_lb_oz_whole(5149.2) == "11 lb 6 oz"  # 11 lb 5.6 oz
+    assert format_lb_oz_whole(11 * 453.59237 + 5.1 * 28.349523125) == "11 lb 6 oz"  # 5.1 oz rounds up too
+    assert format_lb_oz_whole(453.59237) == "1 lb 0 oz"  # exactly 1 lb isn't bumped by float noise
+    assert format_lb_oz_whole(15.5 * 28.349523125) == "1 lb 0 oz"  # 16 oz carries into the next pound
+    assert format_lb_oz_whole(0) == "0 lb 0 oz"
+
 # ---------------------------------------------------------------- row model
 
 
