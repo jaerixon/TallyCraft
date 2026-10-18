@@ -61,7 +61,7 @@ any open questions.
 - To use the new template, the user's TallyCraft folder needs Settings > Restore default
   template after updating, because their edited template is never replaced.
 - First real use: check a real order's packing list printed from Word.
-- Check that the Publish step (`action-gh-release@v3`) ran cleanly on the v0.6.0 tag.
+- Release run on the v0.6.0 tag succeeded, including the first real `action-gh-release@v3` Publish step.
 
 **Open questions**
 - None.
